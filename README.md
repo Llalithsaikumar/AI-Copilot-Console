@@ -1,138 +1,258 @@
-# AI Copilot System
+# 🚀 AI Copilot Console
 
-A local-first full-stack scaffold for a retrieval-augmented AI copilot with:
+**Production-Grade RAG + Agent AI System (FastAPI + React + Vercel + Render)**
 
-- FastAPI backend
-- React/Vite frontend console
-- OpenRouter chat and embedding adapter
-- Gemini Flash-Lite fallback for chat generation
-- Chroma embedded vector store
-- SQLite session memory
-- Explicit planner/executor agent pipeline
-- RAG citations, visible agent steps, first-class traces, and JSON metrics
-- Built-in evaluation dataset/report workflow
-- Docker deployment scaffold with a swappable SQLite/PostgreSQL memory layer
+---
 
-## Project Layout
+## 🔗 Live Demo
 
-```text
-backend/
-  app/
-    main.py
-    evaluation/
-    services/
-  tests/
-frontend/
-  src/
-  tests/
+* 🌐 Frontend: https://ai-copilot-console.vercel.app/
+* ⚙️ Backend API: https://your-link.onrender.com
+
+---
+
+## 🧠 Overview
+
+AI Copilot Console is a **full-stack, production-style AI system** that combines:
+
+* 📚 **Retrieval-Augmented Generation (RAG)**
+* 🤖 **Agent-based reasoning (planner–executor)**
+* ⚡ **Real-time streaming responses**
+* 📊 **Observability + evaluation pipeline**
+
+The system can ingest documents, retrieve context-aware knowledge, execute multi-step reasoning, and return **traceable, measurable outputs**.
+
+---
+
+## ✨ Key Features
+
+* 🔎 **Document RAG** — semantic search with ChromaDB
+* 🤖 **Agent Pipeline** — planner–executor with tool usage
+* 🔌 **Multi-LLM Support** — OpenRouter (primary) + Gemini fallback
+* 🧠 **Session Memory** — persistent conversation tracking
+* ⚡ **Streaming Responses** — real-time token output
+* 📊 **Metrics & Observability** — latency, tokens, cache, errors
+* 🧪 **Evaluation System** — dataset-based scoring + report generation
+* 🗂️ **Source Citations** — transparent retrieval outputs
+
+---
+
+## 🏗️ Architecture
+
+```
+User (Browser)
+     ↓
+Frontend (React + Vite on Vercel)
+     ↓
+FastAPI Backend (Render)
+     ↓
+---------------------------------
+| Orchestrator Layer            |
+| - Routing (LLM / RAG / Agent) |
+| - Caching                     |
+| - Metrics                     |
+---------------------------------
+     ↓
+RAG Pipeline → ChromaDB (Vector Search)
+     ↓
+LLM Providers → OpenRouter + Gemini
+     ↓
+Response (Answer + Trace + Metrics)
 ```
 
-## Backend Quickstart
+---
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-Copy-Item .env.example .env
-uvicorn app.main:app --reload --app-dir backend
+## 🔁 Query Flow
+
+```
+User Query
+   ↓
+Route Selection (LLM / RAG / Agent)
+   ↓
+Cache Check
+   ↓
+Retrieval (if needed)
+   ↓
+Agent Execution (multi-step reasoning)
+   ↓
+LLM Response
+   ↓
+Metrics + Memory + Cache
+   ↓
+Return Answer + Trace
 ```
 
-Set these values in `.env` before calling OpenRouter-backed endpoints:
+---
 
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_CHAT_MODEL`
-- `OPENROUTER_EMBEDDING_MODEL`
+## 🧱 Tech Stack
 
-Optional chat fallback when OpenRouter chat generation fails:
+### Backend
 
-- `GEMINI_API_KEY`
-- `GEMINI_CHAT_MODEL=gemini-2.5-flash-lite`
+* **FastAPI**, Uvicorn
+* **ChromaDB** (vector store)
+* **SQLite / PostgreSQL-ready** (memory)
+* **OpenRouter + Gemini** (LLMs)
+* Docker (deployment-ready)
 
-RAG embeddings intentionally stay on `OPENROUTER_EMBEDDING_MODEL` so one Chroma collection does not mix incompatible embedding spaces.
+### Frontend
 
-Storage defaults to SQLite in local/dev mode. To switch memory to PostgreSQL, set:
+* **React 18 + Vite**
+* Fetch API (backend integration)
+* Minimal UI + metrics display
 
-- `ENV=prod` or `STORAGE_BACKEND=postgres`
-- `POSTGRES_DSN=postgresql://postgres:postgres@postgres:5432/copilot`
+### Deployment
 
-## Frontend Quickstart
+* **Vercel** (frontend)
+* **Render** (backend)
 
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+---
 
-The Vite dev server proxies `/v1`, `/health`, and `/metrics` to `http://localhost:8000`.
-
-## API
-
-- `POST /v1/query`
-- `POST /v1/query/stream`
-- `POST /v1/documents/upload`
-- `GET /v1/documents`
-- `GET /v1/sessions/{session_id}/history`
-- `GET /v1/sessions/{session_id}/metrics`
-- `GET /v1/evaluation/dataset`
-- `GET /v1/evaluation/report`
-- `POST /v1/evaluation/run`
-- `GET /health`
-- `GET /metrics`
-- `GET /metrics/prometheus`
-
-`POST /v1/query` returns the production response contract:
+## 📊 Example Response
 
 ```json
 {
-  "answer": "...",
-  "trace": [{"step": "retrieve", "meta": {"chunks": 3}}],
+  "answer": "The document highlights financial and compliance risks...",
+  "trace": [
+    "retrieved 3 relevant chunks",
+    "summarized content",
+    "extracted risks"
+  ],
   "metrics": {
     "latency_ms": 120,
     "tokens": 450,
-    "retrieval_time_ms": 40,
     "cache_hit": false
   }
 }
 ```
 
-`POST /v1/query/stream` returns newline-delimited JSON events:
+---
 
-```json
-{"type":"token","text":"partial answer"}
-```
+## 🧪 Evaluation System
 
-Queries accept optional `filters.document_id` and `filters.section`, and uploads accept optional `session_id` for session-scoped document isolation.
+Built-in evaluation framework to measure:
 
-Set `PRICE_PER_1K_TOKENS` to enable request and session cost tracking.
+* ✔ Answer relevance
+* ✔ Retrieval accuracy
+* ✔ Consistency
 
-`GET /metrics` returns aggregate observability data:
+Output:
 
 ```json
 {
-  "avg_latency": 110,
-  "p95_latency": 180,
-  "cache_hit_rate": 0.42,
-  "scale": {
-    "documents": 500,
-    "chunks": 25000,
-    "avg_latency_ms": 120,
-    "accuracy": 0.78
-  }
+  "avg_score": 0.78,
+  "total_cases": 50
 }
 ```
 
-## Docker
+---
 
-```powershell
-docker compose up --build
+## 📸 Screenshots
+
+> *(Add screenshots here for maximum impact)*
+
+* Chat UI
+* Agent trace
+* Metrics panel
+
+---
+
+## ⚙️ Local Setup
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .
+uvicorn app.main:app --reload
 ```
 
-The backend is exposed at `http://localhost:8000`; the public API URL is reported by `/health` and `/`.
+---
 
-## Tests
+### Frontend
 
-```powershell
-pytest
+```bash
 cd frontend
-npm test
+npm install
+npm run dev
 ```
+
+---
+
+## 🔐 Environment Variables
+
+```
+OPENROUTER_API_KEY=
+OPENROUTER_CHAT_MODEL=
+OPENROUTER_EMBEDDING_MODEL=
+GEMINI_API_KEY=
+PUBLIC_API_URL=
+```
+
+---
+
+## 🚀 Deployment
+
+### Backend (Render)
+
+* Build: `pip install -r requirements.txt`
+* Start:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 10000
+```
+
+### Frontend (Vercel)
+
+* Root: `frontend/`
+* Build: `npm run build`
+* Env:
+
+```
+VITE_API_URL=https://your-link.onrender.com
+```
+
+---
+
+## ⚠️ Known Limitations
+
+* Render free tier → cold starts
+* Local storage (Chroma + SQLite) → non-persistent
+* Free LLM models → variable latency
+
+---
+
+## 🔮 Future Improvements
+
+* PostgreSQL + Redis (production storage)
+* Hybrid retrieval + reranking
+* Auth + multi-user isolation
+* Cost tracking dashboard
+
+---
+
+## 💼 Resume Description
+
+**AI Copilot System (RAG + Agents)**
+
+* Built a production-grade AI system using FastAPI with RAG-based retrieval and agent orchestration
+* Implemented vector search using ChromaDB and multi-LLM fallback (OpenRouter + Gemini)
+* Designed planner–executor agent pipeline with execution tracing
+* Added observability (latency, tokens, cache) and evaluation pipeline
+* Deployed full-stack system using Vercel (frontend) and Render (backend)
+
+---
+
+## 👤 Author
+
+**Lalith Sai Kumar**
+
+* AI / LLM Engineer
+* Backend Systems + Production AI
+
+---
+
+## ⭐ If you like this project
+
+Give it a star — it helps visibility!
