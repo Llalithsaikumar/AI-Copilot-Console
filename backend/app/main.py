@@ -163,19 +163,19 @@ async def copilot_error_handler(_, exc: CopilotError) -> JSONResponse:
     )
 
 
-@app.post("/auth/register", response_model=UserResponse)
+@app.post("/auth/register", response_model=AuthResponse)
 def register(
     credentials: AuthCredentials,
     response: Response,
     settings: Settings = Depends(get_settings),
-) -> UserResponse:
+) -> AuthResponse:
     try:
         user = register_user(settings, credentials.email, credentials.password)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     token = create_access_token(user["_id"], settings)
     _set_auth_cookie(response, token, settings)
-    return UserResponse(user_id=user["_id"], email=user["email"])
+    return AuthResponse(user_id=user["_id"], access_token=token)
 
 
 @app.post("/auth/login", response_model=AuthResponse)

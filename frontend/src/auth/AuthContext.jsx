@@ -23,14 +23,20 @@ export function AuthProvider({ children }) {
   }, [refreshUser]);
 
   const login = useCallback(async (email, password) => {
-    await loginUser(email, password);
+    const data = await loginUser(email, password);
+    if (data.access_token) {
+      localStorage.setItem("token", data.access_token);
+    }
     const payload = await getCurrentUser();
     setUser(payload);
     return payload;
   }, []);
 
   const register = useCallback(async (email, password) => {
-    await registerUser(email, password);
+    const data = await registerUser(email, password);
+    if (data.access_token) {
+      localStorage.setItem("token", data.access_token);
+    }
     const payload = await getCurrentUser();
     setUser(payload);
     return payload;
@@ -40,6 +46,7 @@ export function AuthProvider({ children }) {
     try {
       await logoutUser();
     } finally {
+      localStorage.removeItem("token");
       setUser(null);
     }
   }, []);
