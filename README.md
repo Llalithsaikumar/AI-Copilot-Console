@@ -232,18 +232,6 @@ VITE_API_URL=https://your-link.onrender.com
 
 ---
 
-## 💼 Resume Description
-
-**AI Copilot System (RAG + Agents)**
-
-* Built a production-grade AI system using FastAPI with RAG-based retrieval and agent orchestration
-* Implemented vector search using ChromaDB and multi-LLM fallback (OpenRouter + Gemini)
-* Designed planner–executor agent pipeline with execution tracing
-* Added observability (latency, tokens, cache) and evaluation pipeline
-* Deployed full-stack system using Vercel (frontend) and Render (backend)
-
----
-
 ## 👤 Author
 
 **Lalith Sai Kumar**
