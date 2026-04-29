@@ -148,7 +148,8 @@ Output:
 
 ## 📸 Screenshots
 
-> *(Add screenshots here for maximum impact)*
+> <img width="1916" height="897" alt="image" src="https://github.com/user-attachments/assets/12f168ab-1bed-4687-bf21-f633cb4d00de" />
+
 
 * Chat UI
 * Agent trace
