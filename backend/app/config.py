@@ -4,6 +4,14 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve .env regardless of CWD: check project root first, then backend/
+_HERE = Path(__file__).resolve().parent          # backend/app/
+_ENV_LOCATIONS = [
+    _HERE.parent.parent / ".env",  # project root/.env   ← primary
+    _HERE.parent / ".env",         # backend/.env
+    Path(".env"),                  # CWD fallback
+]
+
 
 class Settings(BaseSettings):
     app_name: str = "AI Copilot System"
@@ -14,6 +22,19 @@ class Settings(BaseSettings):
     sqlite_path: Path = Field(default=Path("data/copilot.sqlite3"), alias="SQLITE_PATH")
     storage_backend: str | None = Field(default=None, alias="STORAGE_BACKEND")
     postgres_dsn: str | None = Field(default=None, alias="POSTGRES_DSN")
+
+    mongo_uri: str | None = Field(default=None, alias="MONGO_URI")
+    mongo_db_name: str = Field(default="logins", alias="MONGO_DB_NAME")
+    mongo_users_collection: str = Field(default="users", alias="MONGO_USERS_COLLECTION")
+
+    jwt_secret_key: str = Field(default="super-secret", alias="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    access_token_exp_hours: int = Field(default=24, alias="ACCESS_TOKEN_EXP_HOURS")
+    auth_cookie_name: str = Field(default="copilot_token", alias="AUTH_COOKIE_NAME")
+    auth_cookie_secure: bool = Field(default=False, alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: str = Field(default="lax", alias="AUTH_COOKIE_SAMESITE")
+    auth_cookie_domain: str | None = Field(default=None, alias="AUTH_COOKIE_DOMAIN")
+    auth_cookie_path: str = Field(default="/", alias="AUTH_COOKIE_PATH")
 
     chroma_collection: str = Field(default="knowledge_base", alias="CHROMA_COLLECTION")
 
@@ -54,7 +75,10 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=[str(p) for p in _ENV_LOCATIONS],
+        extra="ignore",
+    )
 
     @property
     def chroma_dir(self) -> Path:

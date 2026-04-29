@@ -15,6 +15,7 @@ def test_metrics_aggregate_reports_latency_and_cache_rate():
             cache_hit=False,
         ),
         session_id="session-1",
+        user_id="user-1",
     )
     recorder.record_query(
         QueryMode.RAG,
@@ -27,6 +28,7 @@ def test_metrics_aggregate_reports_latency_and_cache_rate():
             cache_hit=True,
         ),
         session_id="session-1",
+        user_id="user-1",
     )
 
     aggregate = recorder.aggregate(num_documents=2, num_chunks=7)
@@ -37,7 +39,7 @@ def test_metrics_aggregate_reports_latency_and_cache_rate():
     assert aggregate["scale"]["documents"] == 2
     assert aggregate["scale"]["chunks"] == 7
 
-    session = recorder.session_metrics("session-1")
+    session = recorder.session_metrics("user-1", "session-1")
     assert session["query_count"] == 2
     assert session["total_tokens"] == 20
     assert session["total_cost"] == 0.01

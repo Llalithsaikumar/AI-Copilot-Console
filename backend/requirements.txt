@@ -2,7 +2,7 @@ annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0
 attrs==26.1.0
-bcrypt==5.0.0
+bcrypt==4.2.1
 build==1.4.4
 certifi==2026.4.22
 charset-normalizer==3.4.7
@@ -44,11 +44,11 @@ opentelemetry-semantic-conventions==0.62b1
 orjson==3.11.8
 overrides==7.7.0
 packaging==26.2
+passlib==1.7.4
 pip==26.1
 pluggy==1.6.0
 protobuf==6.33.6
-psycopg==3.3.3
-psycopg-binary==3.3.3
+pymongo==4.10.1
 pybase64==1.4.3
 pydantic==2.13.3
 pydantic_core==2.46.3
@@ -60,6 +60,7 @@ pyproject_hooks==1.2.0
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+python-jose==3.3.0
 python-multipart==0.0.27
 PyYAML==6.0.3
 referencing==0.37.0
@@ -70,6 +71,7 @@ rpds-py==0.30.0
 setuptools==65.5.0
 shellingham==1.5.4
 six==1.17.0
+sqlalchemy==2.0.38
 starlette==1.0.0
 tenacity==9.1.4
 tokenizers==0.23.1

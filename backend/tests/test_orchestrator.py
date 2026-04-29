@@ -4,7 +4,7 @@ from app.models import AgentStep, QueryMode, QueryRequest, RetrievedChunk, Trace
 from app.services.agent import AgentRun
 from app.services.cache import ResponseCache
 from app.services.llm_provider import LLMResponse
-from app.services.memory import SQLiteMemoryStore
+from app.services.memory import InMemoryMemoryStore
 from app.services.orchestrator import Orchestrator
 
 
@@ -37,13 +37,13 @@ class FakeRetriever:
             metadata={},
         )
 
-    async def retrieve(self, query, top_k, session_id=None, filters=None):
+    async def retrieve(self, query, top_k, user_id=None, session_id=None, filters=None):
         return [self.chunk]
 
-    def all_chunks(self, session_id=None, filters=None):
+    def all_chunks(self, user_id=None, session_id=None, filters=None):
         return [self.chunk]
 
-    def revision(self):
+    def revision(self, user_id=None):
         return 1
 
 
@@ -55,6 +55,7 @@ class FakeAgent:
         history,
         context_chunks,
         top_k,
+        user_id=None,
         session_id=None,
         filters=None,
     ):
@@ -90,7 +91,7 @@ def build_orchestrator(tmp_path, llm=None):
         llm=llm or FakeLLM(),
         retriever=FakeRetriever(),
         agent=FakeAgent(),
-        memory=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        memory=InMemoryMemoryStore(),
         cache=ResponseCache(),
         settings=CostSettings(),
     )
@@ -98,9 +99,9 @@ def build_orchestrator(tmp_path, llm=None):
 
 def test_route_uses_explicit_mode(tmp_path):
     orchestrator = build_orchestrator(tmp_path)
-    request = QueryRequest(query="hello", mode=QueryMode.RAG)
+    request = QueryRequest(query="hello", session_id="session-1", mode=QueryMode.RAG)
 
-    route = orchestrator.route(request)
+    route = orchestrator.route(request, "user-1")
 
     assert route.mode == QueryMode.RAG
     assert route.reason == "explicit_rag"
@@ -108,9 +109,9 @@ def test_route_uses_explicit_mode(tmp_path):
 
 def test_auto_routes_contact_field_lookup_to_rag(tmp_path):
     orchestrator = build_orchestrator(tmp_path)
-    request = QueryRequest(query="give me mail id", mode=QueryMode.AUTO)
+    request = QueryRequest(query="give me mail id", session_id="session-1", mode=QueryMode.AUTO)
 
-    route = orchestrator.route(request)
+    route = orchestrator.route(request, "user-1")
 
     assert route.mode == QueryMode.RAG
     assert route.reason == "indexed_document_field_lookup"
@@ -124,7 +125,9 @@ def test_rag_query_returns_citations(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-1"))
+    response = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-1", user_id="user-1")
+    )
 
     assert response.mode_used == QueryMode.RAG
     assert response.citations[0].source == "report.txt"
@@ -148,7 +151,9 @@ def test_agent_query_returns_steps(tmp_path):
         mode=QueryMode.AGENT,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-2"))
+    response = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-2", user_id="user-1")
+    )
 
     assert response.mode_used == QueryMode.AGENT
     assert response.answer == "agent answer"
@@ -165,7 +170,9 @@ def test_email_lookup_uses_local_extractor(tmp_path):
         mode=QueryMode.AUTO,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-3"))
+    response = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-3", user_id="user-1")
+    )
 
     assert response.mode_used == QueryMode.RAG
     assert "person@example.com" in response.answer
@@ -180,8 +187,12 @@ def test_repeated_query_returns_cache_hit(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    first = asyncio.run(orchestrator.handle_query(request, request_id="request-1"))
-    second = asyncio.run(orchestrator.handle_query(request, request_id="request-2"))
+    first = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-1", user_id="user-1")
+    )
+    second = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-2", user_id="user-1")
+    )
 
     assert first.metrics.cache_hit is False
     assert second.metrics.cache_hit is True
@@ -202,7 +213,9 @@ def test_llm_failure_returns_graceful_error_response(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-error"))
+    response = asyncio.run(
+        orchestrator.handle_query(request, request_id="request-error", user_id="user-1")
+    )
 
     assert response.error is True
     assert response.answer == "Temporary issue, retrying..."

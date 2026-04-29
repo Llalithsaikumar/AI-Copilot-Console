@@ -3,20 +3,20 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, get_current_user
 from app.models import QueryMode, QueryResponse, ResponseMetrics
 
 
 class FakeMetrics:
-    def record_query(self, mode, metrics, session_id=None):
+    def record_query(self, mode, metrics, session_id=None, user_id=None):
         self.query_recorded = True
 
-    def record_http(self, endpoint, status, latency_ms):
+    def record_http(self, endpoint, status, latency_ms, user_id=None):
         self.http_recorded = (endpoint, status)
 
 
 class FakeOrchestrator:
-    async def handle_query(self, request, request_id, on_token=None):
+    async def handle_query(self, request, request_id, user_id, on_token=None):
         return QueryResponse(
             answer="streamed answer",
             session_id=request.session_id,
@@ -30,20 +30,28 @@ class FakeOrchestrator:
         )
 
 
+class FakeMemory:
+    def ensure_session(self, user_id, session_id):
+        return None
+
+
 def test_streaming_endpoint_emits_meta_tokens_and_final(monkeypatch):
     previous = app.state.container
     fake_container = SimpleNamespace(
         orchestrator=FakeOrchestrator(),
         metrics=FakeMetrics(),
+        memory=FakeMemory(),
     )
     app.state.container = fake_container
     try:
         client = TestClient(app)
+        app.dependency_overrides[get_current_user] = lambda: "user-1"
         response = client.post(
             "/v1/query/stream",
             json={"query": "hello", "session_id": "s1", "mode": "rag"},
         )
     finally:
+        app.dependency_overrides = {}
         app.state.container = previous
 
     events = [

@@ -1,6 +1,5 @@
 from enum import Enum
 from typing import Any
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -19,7 +18,7 @@ class QueryFilters(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1)
-    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    session_id: str = Field(min_length=1)
     context: str | None = None
     mode: QueryMode = QueryMode.AUTO
     top_k: int = Field(default=5, ge=1, le=10)
@@ -107,7 +106,7 @@ class DocumentRecord(BaseModel):
 
 
 class HistoryTurn(BaseModel):
-    id: int
+    id: str
     session_id: str
     user_input: str
     system_response: str
@@ -128,3 +127,23 @@ class SessionMetricsResponse(BaseModel):
     total_tokens: int = 0
     total_cost: float = 0.0
     avg_latency_ms: float = 0.0
+
+
+class AuthCredentials(BaseModel):
+    email: str = Field(min_length=3)
+    password: str = Field(min_length=6)
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: str
+
+
+class AuthResponse(BaseModel):
+    user_id: str
+    access_token: str
+    token_type: str = "bearer"
+
+
+class SessionCreateResponse(BaseModel):
+    session_id: str

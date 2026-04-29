@@ -4,16 +4,13 @@ services:
     environment:
       ENV: dev
       PUBLIC_API_URL: http://localhost:8000
-      STORAGE_BACKEND: sqlite
-      DATA_DIR: /app/data
-      SQLITE_PATH: /app/data/copilot.sqlite3
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/copilot
       REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
-    volumes:
-      - ./data:/app/data
     depends_on:
       - redis
+      - postgres
 
   redis:
     image: redis:7-alpine
@@ -22,8 +19,6 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    profiles:
-      - postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

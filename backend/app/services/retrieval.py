@@ -77,15 +77,14 @@ class RetrievalService:
             raise RetrievalError("chromadb is required for the embedded vector store.") from exc
 
         self._client = chromadb.PersistentClient(path=str(settings.chroma_dir))
-        self._collection = self._client.get_or_create_collection(
-            name=settings.chroma_collection,
-            metadata={"hnsw:space": "cosine"},
-        )
+        self._collections: dict[str, Any] = {}
 
     async def add_document(
         self,
         file_name: str,
         text: str,
+        *,
+        user_id: str,
         session_id: str | None = None,
     ) -> IngestionResult:
         document_id = str(uuid4())
@@ -101,10 +100,11 @@ class RetrievalService:
         model_name = self.embedder.embedding_model_name
 
         skipped = 0
+        collection = self._collection_for_user(user_id)
         for index, chunk in enumerate(chunks):
             chunk_hash = self._chunk_hash(chunk, model_name, document_id, session_id)
             chunk_id = f"chunk_{chunk_hash[:40]}"
-            existing = self._collection.get(ids=[chunk_id])
+            existing = collection.get(ids=[chunk_id])
             if existing.get("ids"):
                 skipped += 1
                 continue
@@ -113,6 +113,7 @@ class RetrievalService:
             documents.append(chunk)
             metadatas.append(
                 {
+                    "user_id": user_id,
                     "document_id": document_id,
                     "file_name": file_name,
                     "chunk_index": index,
@@ -126,7 +127,7 @@ class RetrievalService:
 
         if documents:
             embeddings = await self.embedder.embed(documents)
-            self._collection.add(
+            collection.add(
                 ids=ids,
                 documents=documents,
                 embeddings=embeddings,
@@ -143,23 +144,26 @@ class RetrievalService:
         self,
         query: str,
         top_k: int,
+        *,
+        user_id: str,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
-        if self._collection.count() == 0:
+        collection = self._collection_for_user(user_id)
+        if collection.count() == 0:
             return []
 
         candidate_k = max(top_k * 4, 20)
-        where = self._build_where(session_id=session_id, filters=filters)
+        where = self._build_where(user_id=user_id, session_id=session_id, filters=filters)
         query_embedding = (await self.embedder.embed([query]))[0]
         query_kwargs: dict[str, Any] = {
             "query_embeddings": [query_embedding],
-            "n_results": min(candidate_k, max(self._collection.count(), 1)),
+            "n_results": min(candidate_k, max(collection.count(), 1)),
             "include": ["documents", "metadatas", "distances"],
         }
         if where:
             query_kwargs["where"] = where
-        result = self._collection.query(**query_kwargs)
+        result = collection.query(**query_kwargs)
 
         ids = (result.get("ids") or [[]])[0]
         documents = (result.get("documents") or [[]])[0]
@@ -183,7 +187,7 @@ class RetrievalService:
 
         keyword_chunks = self._keyword_candidates(
             query,
-            self.all_chunks(session_id=session_id, filters=filters),
+            self.all_chunks(user_id=user_id, session_id=session_id, filters=filters),
             candidate_k,
         )
         keyword_scores = {chunk.id: float(chunk.score or 0.0) for chunk in keyword_chunks}
@@ -233,12 +237,18 @@ class RetrievalService:
             )
         return final_chunks
 
-    def list_documents(self, session_id: str | None = None) -> list[DocumentRecord]:
-        where = self._build_where(session_id=session_id, filters=None)
+    def list_documents(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+    ) -> list[DocumentRecord]:
+        collection = self._collection_for_user(user_id)
+        where = self._build_where(user_id=user_id, session_id=session_id, filters=None)
         get_kwargs: dict[str, Any] = {"include": ["metadatas"]}
         if where:
             get_kwargs["where"] = where
-        result = self._collection.get(**get_kwargs)
+        result = collection.get(**get_kwargs)
         aggregate: dict[str, dict[str, Any]] = {}
         for metadata in result.get("metadatas") or []:
             if not metadata:
@@ -275,14 +285,17 @@ class RetrievalService:
 
     def all_chunks(
         self,
+        *,
+        user_id: str,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
-        where = self._build_where(session_id=session_id, filters=filters)
+        collection = self._collection_for_user(user_id)
+        where = self._build_where(user_id=user_id, session_id=session_id, filters=filters)
         get_kwargs: dict[str, Any] = {"include": ["documents", "metadatas"]}
         if where:
             get_kwargs["where"] = where
-        result = self._collection.get(**get_kwargs)
+        result = collection.get(**get_kwargs)
         ids = result.get("ids") or []
         documents = result.get("documents") or []
         metadatas = result.get("metadatas") or []
@@ -298,8 +311,8 @@ class RetrievalService:
             chunks.append(self._to_chunk(chunk_id, document or "", metadata, None))
         return chunks
 
-    def revision(self) -> int:
-        return int(self._collection.count())
+    def revision(self, *, user_id: str) -> int:
+        return int(self._collection_for_user(user_id).count())
 
     @staticmethod
     def _chunk_hash(
@@ -330,11 +343,13 @@ class RetrievalService:
     def _build_where(
         self,
         *,
+        user_id: str,
         session_id: str | None,
         filters: QueryFilters | dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         clauses: list[dict[str, str]] = []
-        if session_id and self._session_has_chunks(session_id):
+        clauses.append({"user_id": user_id})
+        if session_id and self._session_has_chunks(user_id, session_id):
             clauses.append({"session_id": session_id})
 
         document_id = self._filter_value(filters, "document_id")
@@ -350,19 +365,33 @@ class RetrievalService:
             return clauses[0]
         return {"$and": clauses}
 
-    def _session_has_chunks(self, session_id: str) -> bool:
+    def _session_has_chunks(self, user_id: str, session_id: str) -> bool:
         try:
-            result = self._collection.get(
-                where={"session_id": session_id},
+            result = self._collection_for_user(user_id).get(
+                where={"$and": [{"session_id": session_id}, {"user_id": user_id}]},
                 include=["metadatas"],
                 limit=1,
             )
         except TypeError:
-            result = self._collection.get(
-                where={"session_id": session_id},
+            result = self._collection_for_user(user_id).get(
+                where={"$and": [{"session_id": session_id}, {"user_id": user_id}]},
                 include=["metadatas"],
             )
         return bool(result.get("ids"))
+
+    def _collection_for_user(self, user_id: str) -> Any:
+        if not user_id:
+            raise RetrievalError("user_id is required for retrieval operations.")
+        existing = self._collections.get(user_id)
+        if existing is not None:
+            return existing
+        name = f"{self.settings.chroma_collection}_{user_id}"
+        collection = self._client.get_or_create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine", "user_id": user_id},
+        )
+        self._collections[user_id] = collection
+        return collection
 
     @staticmethod
     def _filter_value(

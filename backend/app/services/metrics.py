@@ -1,6 +1,6 @@
 import threading
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import mean
 
 from app.models import QueryMode, ResponseMetrics
@@ -30,6 +30,21 @@ class SessionMetricTotals:
         self.latencies_ms.append(metrics.latency_ms)
 
 
+@dataclass
+class UserMetricTotals:
+    request_count: Counter[tuple[str, str]] = field(default_factory=Counter)
+    mode_count: Counter[str] = field(default_factory=Counter)
+    error_count: Counter[str] = field(default_factory=Counter)
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    http_latencies_ms: list[float] = field(default_factory=list)
+    query_latencies_ms: list[float] = field(default_factory=list)
+    retrieval_latencies_ms: list[float] = field(default_factory=list)
+    cache_hits: int = 0
+    query_count: int = 0
+    latest_accuracy: float | None = None
+
+
 class MetricsRecorder:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -44,18 +59,30 @@ class MetricsRecorder:
         self.cache_hits = 0
         self.query_count = 0
         self.latest_accuracy: float | None = None
-        self.session_totals: dict[str, SessionMetricTotals] = {}
+        self.session_totals: dict[tuple[str, str], SessionMetricTotals] = {}
+        self.user_totals: dict[str, UserMetricTotals] = {}
 
-    def record_http(self, endpoint: str, status: str, latency_ms: float) -> None:
+    def record_http(
+        self,
+        endpoint: str,
+        status: str,
+        latency_ms: float,
+        user_id: str | None = None,
+    ) -> None:
         with self._lock:
             self.request_count[(endpoint, status)] += 1
             self.http_latencies_ms.append(latency_ms)
+            if user_id:
+                totals = self.user_totals.setdefault(user_id, UserMetricTotals())
+                totals.request_count[(endpoint, status)] += 1
+                totals.http_latencies_ms.append(latency_ms)
 
     def record_query(
         self,
         mode: QueryMode,
         metrics: ResponseMetrics,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         with self._lock:
             self.mode_count[mode.value] += 1
@@ -69,15 +96,31 @@ class MetricsRecorder:
                 self.total_cost += metrics.cost
             if metrics.error:
                 self.error_count[metrics.error] += 1
-            if session_id:
+            if user_id:
+                totals = self.user_totals.setdefault(user_id, UserMetricTotals())
+                totals.mode_count[mode.value] += 1
+                totals.query_count += 1
+                totals.query_latencies_ms.append(metrics.latency_ms)
+                totals.retrieval_latencies_ms.append(metrics.retrieval_time_ms)
+                totals.total_tokens += metrics.tokens
+                if metrics.cache_hit:
+                    totals.cache_hits += 1
+                if metrics.cost is not None:
+                    totals.total_cost += metrics.cost
+                if metrics.error:
+                    totals.error_count[metrics.error] += 1
+            if session_id and user_id:
                 self.session_totals.setdefault(
-                    session_id,
+                    (user_id, session_id),
                     SessionMetricTotals(),
                 ).record(metrics)
 
-    def record_evaluation(self, avg_score: float) -> None:
+    def record_evaluation(self, avg_score: float, user_id: str | None = None) -> None:
         with self._lock:
             self.latest_accuracy = avg_score
+            if user_id:
+                totals = self.user_totals.setdefault(user_id, UserMetricTotals())
+                totals.latest_accuracy = avg_score
 
     def aggregate(
         self,
@@ -113,9 +156,47 @@ class MetricsRecorder:
             }
         return payload
 
-    def session_metrics(self, session_id: str) -> dict[str, float | int | str]:
+    def aggregate_for_user(
+        self,
+        user_id: str,
+        *,
+        num_documents: int = 0,
+        num_chunks: int = 0,
+    ) -> dict[str, float | int | None | dict[str, float | int | None]]:
         with self._lock:
-            totals = self.session_totals.get(session_id, SessionMetricTotals())
+            totals = self.user_totals.get(user_id, UserMetricTotals())
+            avg_latency = mean(totals.query_latencies_ms) if totals.query_latencies_ms else 0.0
+            avg_retrieval = (
+                mean(totals.retrieval_latencies_ms)
+                if totals.retrieval_latencies_ms
+                else 0.0
+            )
+            cache_hit_rate = totals.cache_hits / totals.query_count if totals.query_count else 0.0
+            error_total = sum(totals.error_count.values())
+            payload = {
+                "avg_latency": avg_latency,
+                "p95_latency": _percentile(totals.query_latencies_ms, 0.95),
+                "cache_hit_rate": cache_hit_rate,
+                "avg_retrieval_time_ms": avg_retrieval,
+                "total_requests": totals.query_count,
+                "total_tokens": totals.total_tokens,
+                "total_cost": totals.total_cost,
+                "sessions_tracked": len(
+                    [key for key in self.session_totals if key[0] == user_id]
+                ),
+                "error_rate": error_total / totals.query_count if totals.query_count else 0.0,
+                "scale": {
+                    "documents": num_documents,
+                    "chunks": num_chunks,
+                    "avg_latency_ms": avg_latency,
+                    "accuracy": totals.latest_accuracy,
+                },
+            }
+        return payload
+
+    def session_metrics(self, user_id: str, session_id: str) -> dict[str, float | int | str]:
+        with self._lock:
+            totals = self.session_totals.get((user_id, session_id), SessionMetricTotals())
             latencies = totals.latencies_ms or []
             return {
                 "session_id": session_id,

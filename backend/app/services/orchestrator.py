@@ -43,23 +43,25 @@ class Orchestrator:
         self,
         request: QueryRequest,
         request_id: str,
+        user_id: str,
         on_token: Any | None = None,
     ) -> QueryResponse:
         started = time.perf_counter()
-        route = self.route(request)
+        route = self.route(request, user_id)
         trace: list[TraceStep] = [
             TraceStep(
                 step="route",
                 meta={"mode": route.mode.value, "reason": route.reason},
             )
         ]
-        history = self.memory.recent_messages(request.session_id)
+        history = self.memory.recent_messages(user_id, request.session_id)
         retrieval_revision = (
-            self.retriever.revision()
+            self.retriever.revision(user_id=user_id)
             if route.mode in {QueryMode.RAG, QueryMode.AGENT}
             else 0
         )
         cache_key = make_cache_key(
+            user_id,
             request.session_id,
             request.query,
             request.context,
@@ -86,7 +88,7 @@ class Orchestrator:
             response.metrics.total_tokens = response.metrics.tokens
             response.metrics.cost = 0.0
             response.request_id = request_id
-            self._remember(request, response, request_id)
+            self._remember(user_id, request, response, request_id)
             return response
         trace.append(TraceStep(step="cache_check", meta={"hit": False}))
 
@@ -101,14 +103,16 @@ class Orchestrator:
             try:
                 email_chunks = chunks_with_emails(
                     self.retriever.all_chunks(
-                        session_id=request.session_id,
-                        filters=request.filters,
-                    )
+                            user_id=user_id,
+                            session_id=request.session_id,
+                            filters=request.filters,
+                        )
                 )
             except Exception as exc:
                 return self._error_response(
                     request=request,
                     request_id=request_id,
+                    user_id=user_id,
                     started=started,
                     route=route,
                     trace=trace,
@@ -139,6 +143,7 @@ class Orchestrator:
                 retrieved_chunks = await self.retriever.retrieve(
                     request.query,
                     top_k=request.top_k,
+                    user_id=user_id,
                     session_id=request.session_id,
                     filters=request.filters,
                 )
@@ -146,6 +151,7 @@ class Orchestrator:
                 return self._error_response(
                     request=request,
                     request_id=request_id,
+                    user_id=user_id,
                     started=started,
                     route=route,
                     trace=trace,
@@ -200,6 +206,7 @@ class Orchestrator:
                     history=history,
                     context_chunks=retrieved_chunks,
                     top_k=request.top_k,
+                    user_id=user_id,
                     session_id=request.session_id,
                     filters=request.filters.model_dump(mode="json"),
                 )
@@ -207,6 +214,7 @@ class Orchestrator:
                 return self._error_response(
                     request=request,
                     request_id=request_id,
+                    user_id=user_id,
                     started=started,
                     route=route,
                     trace=trace,
@@ -252,6 +260,7 @@ class Orchestrator:
                 return self._error_response(
                     request=request,
                     request_id=request_id,
+                    user_id=user_id,
                     started=started,
                     route=route,
                     trace=trace,
@@ -291,15 +300,15 @@ class Orchestrator:
             request_id=request_id,
         )
         self.cache.set(cache_key, response.model_dump(mode="json"))
-        self._remember(request, response, request_id)
+        self._remember(user_id, request, response, request_id)
         return response
 
-    def route(self, request: QueryRequest) -> RouteDecision:
+    def route(self, request: QueryRequest, user_id: str) -> RouteDecision:
         if request.mode != QueryMode.AUTO:
             return RouteDecision(mode=request.mode, reason=f"explicit_{request.mode.value}")
 
         query = request.query.lower()
-        if is_document_field_lookup(query) and self.retriever.revision() > 0:
+        if is_document_field_lookup(query) and self.retriever.revision(user_id=user_id) > 0:
             return RouteDecision(mode=QueryMode.RAG, reason="indexed_document_field_lookup")
         if self._needs_agent(query):
             return RouteDecision(mode=QueryMode.AGENT, reason="multi_step_or_tool_request")
@@ -444,6 +453,7 @@ class Orchestrator:
         *,
         request: QueryRequest,
         request_id: str,
+        user_id: str,
         started: float,
         route: RouteDecision,
         trace: list[TraceStep],
@@ -485,16 +495,18 @@ class Orchestrator:
             metrics=metrics,
             request_id=request_id,
         )
-        self._remember(request, response, request_id)
+        self._remember(user_id, request, response, request_id)
         return response
 
     def _remember(
         self,
+        user_id: str,
         request: QueryRequest,
         response: QueryResponse,
         request_id: str,
     ) -> None:
         self.memory.add_turn(
+            user_id=user_id,
             session_id=request.session_id,
             user_input=request.query,
             system_response=response.answer,

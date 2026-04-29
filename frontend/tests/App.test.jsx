@@ -2,14 +2,20 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../src/App.jsx";
 import * as api from "../src/api.js";
+import { AuthProvider } from "../src/auth/AuthContext.jsx";
 
 vi.mock("../src/api.js", () => ({
+  createSession: vi.fn(),
+  getCurrentUser: vi.fn(),
   getHistory: vi.fn(),
   getMetrics: vi.fn(),
   getSessionMetrics: vi.fn(),
+  loginUser: vi.fn(),
   listDocuments: vi.fn(),
+  logoutUser: vi.fn(),
   queryCopilot: vi.fn(),
   queryCopilotStream: vi.fn(),
+  registerUser: vi.fn(),
   uploadDocument: vi.fn()
 }));
 
@@ -54,6 +60,11 @@ beforeEach(() => {
     p95_latency: 12,
     cache_hit_rate: 0
   });
+  api.getCurrentUser.mockResolvedValue({
+    user_id: "user-1",
+    email: "test@example.com"
+  });
+  api.createSession.mockResolvedValue({ session_id: "session-1" });
   api.getSessionMetrics.mockResolvedValue({
     session_id: "session-1",
     query_count: 1,
@@ -86,8 +97,16 @@ afterEach(() => {
   cleanup();
 });
 
+function renderWithAuth() {
+  return render(
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  );
+}
+
 test("submits a query and renders the answer", async () => {
-  render(<App />);
+  renderWithAuth();
   const typedQuery = `query-${Date.now()}`;
 
   fireEvent.change(screen.getByLabelText("Query"), {
@@ -110,7 +129,7 @@ test("submits a query and renders the answer", async () => {
 });
 
 test("submits a query when Enter is pressed in the textarea", async () => {
-  render(<App />);
+  renderWithAuth();
   const typedQuery = `keyboard-${Date.now()}`;
 
   const textarea = screen.getByLabelText("Query");
@@ -132,7 +151,7 @@ test("submits a query when Enter is pressed in the textarea", async () => {
 });
 
 test("shows suggested queries after upload and copies one into the composer", async () => {
-  render(<App />);
+  renderWithAuth();
 
   const file = new File(["profile text"], "profile.pdf", { type: "application/pdf" });
   fireEvent.change(screen.getByLabelText(/upload/i), {
@@ -151,7 +170,7 @@ test("shows suggested queries after upload and copies one into the composer", as
 });
 
 test("streams tokens before final response", async () => {
-  render(<App />);
+  renderWithAuth();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "stream please" }
@@ -165,7 +184,7 @@ test("streams tokens before final response", async () => {
 });
 
 test("toggles source visibility", async () => {
-  render(<App />);
+  renderWithAuth();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "show sources" }
@@ -179,7 +198,7 @@ test("toggles source visibility", async () => {
 });
 
 test("toggles trace visibility", async () => {
-  render(<App />);
+  renderWithAuth();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "show trace" }
@@ -195,7 +214,7 @@ test("toggles trace visibility", async () => {
 
 test("falls back to blocking query when streaming fails", async () => {
   api.queryCopilotStream.mockRejectedValueOnce(new Error("stream failed"));
-  render(<App />);
+  renderWithAuth();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "fallback please" }

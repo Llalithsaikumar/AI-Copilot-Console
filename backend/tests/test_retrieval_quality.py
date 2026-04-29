@@ -49,7 +49,8 @@ class FakeCollection:
 def build_service(items):
     service = RetrievalService.__new__(RetrievalService)
     service.embedder = FakeEmbedder()
-    service._collection = FakeCollection(items)
+    service._collections = {"user-1": FakeCollection(items)}
+    service._collection_for_user = lambda user_id: service._collections[user_id]
     return service
 
 
@@ -59,6 +60,7 @@ def item(chunk_id, text, document_id, section, session_id, distance):
         "text": text,
         "distance": distance,
         "metadata": {
+            "user_id": "user-1",
             "file_name": f"{document_id}.md",
             "document_id": document_id,
             "section": section,
@@ -78,7 +80,7 @@ def test_hybrid_retrieval_reranks_keyword_relevant_chunk():
     )
 
     chunks = asyncio.run(
-        service.retrieve("compliance risk", top_k=1, session_id="s1")
+        service.retrieve("compliance risk", top_k=1, user_id="user-1", session_id="s1")
     )
 
     assert chunks[0].id == "chunk-2"
@@ -100,6 +102,7 @@ def test_retrieval_filters_by_document_section_and_session():
         service.retrieve(
             "risk",
             top_k=10,
+            user_id="user-1",
             session_id="s1",
             filters=QueryFilters(document_id="doc1", section="risks"),
         )

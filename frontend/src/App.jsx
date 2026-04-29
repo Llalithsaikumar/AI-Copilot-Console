@@ -13,10 +13,12 @@ import {
   getHistory,
   getMetrics,
   listDocuments,
+  createSession,
   queryCopilot,
   queryCopilotStream,
   uploadDocument
 } from "./api.js";
+import { useAuth } from "./auth/AuthContext.jsx";
 
 const MODES = ["auto", "llm", "rag", "agent"];
 const TABS = ["Answer", "Context", "Trace", "Agent Steps", "Metrics"];
@@ -29,13 +31,8 @@ function createSessionId() {
 }
 
 export default function App() {
-  const [sessionId] = useState(() => {
-    const existing = localStorage.getItem("copilot.sessionId");
-    if (existing) return existing;
-    const created = createSessionId();
-    localStorage.setItem("copilot.sessionId", created);
-    return created;
-  });
+  const { user, logout } = useAuth();
+  const [sessionId, setSessionId] = useState("");
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState("auto");
   const [activeTab, setActiveTab] = useState("Answer");
@@ -59,21 +56,55 @@ export default function App() {
   const trace = response?.trace || [];
 
   useEffect(() => {
-    refreshSideData();
+    if (!user) return;
+    ensureSession();
+  }, [user]);
+
+  useEffect(() => {
+    if (sessionId) {
+      refreshSideData(sessionId);
+    }
   }, [sessionId]);
 
-  async function refreshSideData() {
+  async function ensureSession() {
+    if (!user?.user_id) return null;
+    const key = `copilot.sessionId.${user.user_id}`;
+    const existing = localStorage.getItem(key);
+    if (existing) {
+      setSessionId(existing);
+      return existing;
+    }
+    const created = await createSession();
+    const id = created.session_id || createSessionId();
+    localStorage.setItem(key, id);
+    setSessionId(id);
+    return id;
+  }
+
+  async function handleLogout() {
+    const key = user?.user_id ? `copilot.sessionId.${user.user_id}` : null;
+    await logout();
+    if (key) {
+      localStorage.removeItem(key);
+    }
+    setSessionId("");
+    setHistory([]);
+    setDocuments([]);
+    setMetricsSnapshot(null);
+    setSessionMetrics(null);
+  }
+
+  async function refreshSideData(activeSessionId) {
     try {
-      const [historyPayload, docsPayload, metricsPayload, sessionMetricsPayload] =
-        await Promise.all([
-          getHistory(sessionId),
-          listDocuments(sessionId),
-          getMetrics(),
-          getSessionMetrics(sessionId)
-        ]);
-      setHistory(historyPayload.turns || []);
+      const tasks = [listDocuments(activeSessionId), getMetrics()];
+      if (activeSessionId) {
+        tasks.push(getHistory(activeSessionId), getSessionMetrics(activeSessionId));
+      }
+      const [docsPayload, metricsPayload, historyPayload, sessionMetricsPayload] =
+        await Promise.all(tasks);
       setDocuments(docsPayload || []);
       setMetricsSnapshot(metricsPayload || null);
+      setHistory(historyPayload?.turns || []);
       setSessionMetrics(sessionMetricsPayload || null);
     } catch {
       setMetricsSnapshot(null);
@@ -91,14 +122,20 @@ export default function App() {
     setIsQuerying(true);
     setError("");
     setActiveTab("Answer");
+    const activeSessionId = sessionId || (await ensureSession());
+    if (!activeSessionId) {
+      setError("No active session available.");
+      setIsQuerying(false);
+      return;
+    }
     const payload = {
       query: query.trim(),
-      session_id: sessionId,
+      session_id: activeSessionId,
       mode
     };
     setResponse({
       answer: "",
-      session_id: sessionId,
+      session_id: activeSessionId,
       mode_used: mode,
       citations: [],
       retrieved_chunks: [],
@@ -127,7 +164,7 @@ export default function App() {
         }
       );
       setQuery("");
-      await refreshSideData();
+      await refreshSideData(activeSessionId);
     } catch (err) {
       try {
         const fallback = await queryCopilot(payload);
@@ -136,7 +173,7 @@ export default function App() {
           setError(fallback.answer || "Temporary issue, retrying...");
         }
         setQuery("");
-        await refreshSideData();
+        await refreshSideData(activeSessionId);
       } catch (fallbackError) {
         setError(fallbackError.message || err.message);
       }
@@ -158,12 +195,16 @@ export default function App() {
     setError("");
     setUploadStatus("");
     try {
-      const payload = await uploadDocument(file, sessionId);
+      const activeSessionId = sessionId || (await ensureSession());
+      if (!activeSessionId) {
+        throw new Error("No active session available.");
+      }
+      const payload = await uploadDocument(file, activeSessionId);
       setUploadStatus(
         `${payload.file_name}: ${payload.chunks_indexed} indexed, ${payload.chunks_skipped} skipped`
       );
       setSuggestedQueries(payload.suggested_queries || []);
-      await refreshSideData();
+      await refreshSideData(activeSessionId);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -185,6 +226,9 @@ export default function App() {
             <h1>AI Copilot Console</h1>
             <p>{routeBadge}</p>
           </div>
+          <button className="logout-button" type="button" onClick={handleLogout}>
+            Log out
+          </button>
         </section>
 
         <section className="panel">
@@ -192,7 +236,7 @@ export default function App() {
             <History size={18} aria-hidden="true" />
             <h2>Session</h2>
           </header>
-          <code className="session-id">{sessionId}</code>
+          <code className="session-id">{sessionId || "No active session"}</code>
           <div className="history-list">
             {history.length === 0 ? (
               <p className="empty-state">No turns recorded.</p>

@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 async function parseResponse(response) {
   const contentType = response.headers.get("content-type") || "";
@@ -16,8 +16,55 @@ async function parseResponse(response) {
   return payload;
 }
 
+async function apiFetch(path, options = {}) {
+  const token = localStorage.getItem("token");
+  const headers = { ...(options.headers || {}) };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include"
+  });
+}
+
+export async function getCurrentUser() {
+  const response = await apiFetch("/auth/me");
+  return parseResponse(response);
+}
+
+export async function registerUser(email, password) {
+  const response = await apiFetch("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  return parseResponse(response);
+}
+
+export async function loginUser(email, password) {
+  const response = await apiFetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  return parseResponse(response);
+}
+
+export async function logoutUser() {
+  const response = await apiFetch("/auth/logout", { method: "POST" });
+  return parseResponse(response);
+}
+
+export async function createSession() {
+  const response = await apiFetch("/v1/sessions", { method: "POST" });
+  return parseResponse(response);
+}
+
 export async function queryCopilot(payload) {
-  const response = await fetch(`${API_BASE}/v1/query`, {
+  const response = await apiFetch("/v1/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -26,7 +73,7 @@ export async function queryCopilot(payload) {
 }
 
 export async function queryCopilotStream(payload, onToken, onFinal, onError) {
-  const response = await fetch(`${API_BASE}/v1/query/stream`, {
+  const response = await apiFetch("/v1/query/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
@@ -73,7 +120,7 @@ export async function uploadDocument(file, sessionId) {
   if (sessionId) {
     formData.append("session_id", sessionId);
   }
-  const response = await fetch(`${API_BASE}/v1/documents/upload`, {
+  const response = await apiFetch("/v1/documents/upload", {
     method: "POST",
     body: formData
   });
@@ -82,21 +129,21 @@ export async function uploadDocument(file, sessionId) {
 
 export async function listDocuments(sessionId) {
   const suffix = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  const response = await fetch(`${API_BASE}/v1/documents${suffix}`);
+  const response = await apiFetch(`/v1/documents${suffix}`);
   return parseResponse(response);
 }
 
 export async function getHistory(sessionId) {
-  const response = await fetch(`${API_BASE}/v1/sessions/${sessionId}/history`);
+  const response = await apiFetch(`/v1/sessions/${sessionId}/history`);
   return parseResponse(response);
 }
 
 export async function getMetrics() {
-  const response = await fetch(`${API_BASE}/metrics`);
+  const response = await apiFetch("/metrics");
   return parseResponse(response);
 }
 
 export async function getSessionMetrics(sessionId) {
-  const response = await fetch(`${API_BASE}/v1/sessions/${sessionId}/metrics`);
+  const response = await apiFetch(`/v1/sessions/${sessionId}/metrics`);
   return parseResponse(response);
 }

@@ -169,6 +169,8 @@ pip install -e .
 uvicorn app.main:app --reload
 ```
 
+Backend now requires PostgreSQL. Set `POSTGRES_DSN` before starting the API.
+
 ---
 
 ### Frontend
@@ -184,12 +186,33 @@ npm run dev
 ## 🔐 Environment Variables
 
 ```
+POSTGRES_DSN=
+JWT_SECRET_KEY=
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXP_HOURS=24
+AUTH_COOKIE_NAME=copilot_token
+AUTH_COOKIE_SECURE=false
+AUTH_COOKIE_SAMESITE=lax
+AUTH_COOKIE_DOMAIN=
 OPENROUTER_API_KEY=
 OPENROUTER_CHAT_MODEL=
 OPENROUTER_EMBEDDING_MODEL=
 GEMINI_API_KEY=
 PUBLIC_API_URL=
 ```
+
+For cross-site deployments (Vercel + Render), set `AUTH_COOKIE_SECURE=true` and
+`AUTH_COOKIE_SAMESITE=none` so the browser will send the auth cookie.
+
+## 🔐 Auth + Sessions
+
+Flow:
+
+1. `POST /auth/register` or `POST /auth/login`
+2. `POST /v1/sessions` to create a session_id
+3. Use `session_id` on query + upload requests
+
+All core endpoints are protected; only `/health` is public.
 
 ---
 
