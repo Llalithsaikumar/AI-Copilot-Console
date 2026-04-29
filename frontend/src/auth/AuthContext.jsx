@@ -19,7 +19,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    refreshUser();
+    const token = localStorage.getItem("token");
+    if (token) {
+      refreshUser();
+    } else {
+      setLoading(false);
+    }
   }, [refreshUser]);
 
   const login = useCallback(async (email, password) => {
