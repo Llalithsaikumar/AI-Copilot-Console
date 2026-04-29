@@ -81,7 +81,9 @@ def build_container() -> ServiceContainer:
 app = FastAPI(title="AI Copilot System", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_origin_list,
+    allow_origins=[
+        "https://ai-copilot-console.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
