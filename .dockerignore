@@ -1,0 +1,10 @@
+.pytest_cache
+.venv
+data
+backend/**/__pycache__
+backend/**/*.pyc
+data/chroma
+frontend/dist
+frontend/node_modules
+logs
+.env
