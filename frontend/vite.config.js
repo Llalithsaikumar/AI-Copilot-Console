@@ -9,7 +9,9 @@ export default defineConfig({
       "/auth": "http://127.0.0.1:8000",
       "/v1": "http://127.0.0.1:8000",
       "/health": "http://127.0.0.1:8000",
-      "/metrics": "http://127.0.0.1:8000"
+      "/metrics": "http://127.0.0.1:8000",
+      "/docs": "http://127.0.0.1:8000",
+      "/openapi.json": "http://127.0.0.1:8000"
     }
   },
   test: {

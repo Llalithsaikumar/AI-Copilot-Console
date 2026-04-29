@@ -95,9 +95,6 @@ def build_container() -> ServiceContainer:
 app = FastAPI(
     title="AI Copilot System",
     version="0.1.0",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
 )
 _settings = get_settings()
 app.add_middleware(
