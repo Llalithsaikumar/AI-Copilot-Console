@@ -87,6 +87,7 @@ class RetrievalService:
         file_name: str,
         text: str,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> IngestionResult:
         document_id = str(uuid4())
         chunks = self.chunker.chunk(text)
@@ -119,6 +120,7 @@ class RetrievalService:
                     "chunk_hash": chunk_hash,
                     "embedding_model": model_name,
                     "session_id": session_id or "",
+                    "user_id": user_id or "",
                     "section": sections[index],
                     "created_at": created_at,
                 }
@@ -145,12 +147,13 @@ class RetrievalService:
         top_k: int,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> list[RetrievedChunk]:
         if self._collection.count() == 0:
             return []
 
         candidate_k = max(top_k * 4, 20)
-        where = self._build_where(session_id=session_id, filters=filters)
+        where = self._build_where(session_id=session_id, filters=filters, user_id=user_id)
         query_embedding = (await self.embedder.embed([query]))[0]
         query_kwargs: dict[str, Any] = {
             "query_embeddings": [query_embedding],
@@ -233,8 +236,8 @@ class RetrievalService:
             )
         return final_chunks
 
-    def list_documents(self, session_id: str | None = None) -> list[DocumentRecord]:
-        where = self._build_where(session_id=session_id, filters=None)
+    def list_documents(self, session_id: str | None = None, user_id: str | None = None) -> list[DocumentRecord]:
+        where = self._build_where(session_id=session_id, filters=None, user_id=user_id)
         get_kwargs: dict[str, Any] = {"include": ["metadatas"]}
         if where:
             get_kwargs["where"] = where
@@ -277,8 +280,9 @@ class RetrievalService:
         self,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> list[RetrievedChunk]:
-        where = self._build_where(session_id=session_id, filters=filters)
+        where = self._build_where(session_id=session_id, filters=filters, user_id=user_id)
         get_kwargs: dict[str, Any] = {"include": ["documents", "metadatas"]}
         if where:
             get_kwargs["where"] = where
@@ -332,10 +336,15 @@ class RetrievalService:
         *,
         session_id: str | None,
         filters: QueryFilters | dict[str, Any] | None,
+        user_id: str | None = None,
     ) -> dict[str, Any] | None:
         clauses: list[dict[str, str]] = []
         if session_id and self._session_has_chunks(session_id):
             clauses.append({"session_id": session_id})
+
+        # Add user_id filter for multi-tenant isolation
+        if user_id:
+            clauses.append({"user_id": user_id})
 
         document_id = self._filter_value(filters, "document_id")
         section = self._filter_value(filters, "section")
