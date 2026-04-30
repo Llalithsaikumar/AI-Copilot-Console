@@ -46,7 +46,7 @@ class Settings(BaseSettings):
         alias="GEMINI_BASE_URL",
     )
 
-    # MongoDB settings
+    # MongoDB settings (use Atlas URL in production via MONGODB_URL env var)
     mongodb_url: str = Field(
         default="mongodb://localhost:27017",
         alias="MONGODB_URL",
