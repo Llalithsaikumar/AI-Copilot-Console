@@ -46,6 +46,16 @@ class Settings(BaseSettings):
         alias="GEMINI_BASE_URL",
     )
 
+    # MongoDB settings
+    mongodb_url: str = Field(
+        default="mongodb://localhost:27017",
+        alias="MONGODB_URL",
+    )
+    mongodb_database: str = Field(
+        default="ai_copilot",
+        alias="MONGODB_DATABASE",
+    )
+
     request_timeout_seconds: float = 45.0
     llm_temperature: float = 0.2
     price_per_1k_tokens: float = Field(default=0.0, alias="PRICE_PER_1K_TOKENS")
