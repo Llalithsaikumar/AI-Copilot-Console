@@ -34,6 +34,7 @@ from app.services.metrics import MetricsRecorder
 from app.services.orchestrator import Orchestrator
 from app.services.retrieval import RetrievalService
 from app.services.suggestions import suggest_queries_for_document
+from app.auth.routes import router as auth_router
 
 
 @dataclass
@@ -79,16 +80,15 @@ def build_container() -> ServiceContainer:
 
 
 app = FastAPI(title="AI Copilot System", version="0.1.0")
+app.include_router(auth_router)
+app.state.container = build_container()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://ai-copilot-console.vercel.app"
-    ],
+    allow_origins=app.state.container.settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.state.container = build_container()
 
 
 def container() -> ServiceContainer:
