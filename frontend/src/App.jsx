@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   Database,
   FileText,
   History,
   Loader2,
+  LogOut,
   Send,
   Upload
 } from "lucide-react";
@@ -12,6 +14,7 @@ import {
   getSessionMetrics,
   getHistory,
   getMetrics,
+  getMe,
   listDocuments,
   queryCopilot,
   queryCopilotStream,
@@ -29,6 +32,7 @@ function createSessionId() {
 }
 
 export default function App() {
+  const navigate = useNavigate();
   const [sessionId] = useState(() => {
     const existing = localStorage.getItem("copilot.sessionId");
     if (existing) return existing;
@@ -36,6 +40,9 @@ export default function App() {
     localStorage.setItem("copilot.sessionId", created);
     return created;
   });
+  const [userEmail, setUserEmail] = useState(
+    () => localStorage.getItem("userEmail") || ""
+  );
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState("auto");
   const [activeTab, setActiveTab] = useState("Answer");
@@ -51,6 +58,27 @@ export default function App() {
   const [error, setError] = useState("");
   const [uploadStatus, setUploadStatus] = useState("");
   const [suggestedQueries, setSuggestedQueries] = useState([]);
+
+  useEffect(() => {
+    if (!userEmail) {
+      getMe()
+        .then((data) => {
+          setUserEmail(data.email || "");
+          localStorage.setItem("userEmail", data.email || "");
+        })
+        .catch(() => {
+          localStorage.removeItem("token");
+          localStorage.removeItem("userEmail");
+          navigate("/login", { replace: true });
+        });
+    }
+  }, [userEmail, navigate]);
+
+  function handleLogout() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("userEmail");
+    navigate("/login", { replace: true });
+  }
 
   const selectedMetrics = response?.metrics || {};
   const citations = response?.citations || [];
@@ -185,6 +213,14 @@ export default function App() {
             <h1>AI Copilot Console</h1>
             <p>{routeBadge}</p>
           </div>
+          {userEmail && (
+            <div className="user-block">
+              <span className="user-email">{userEmail}</span>
+              <button className="logout-button" onClick={handleLogout} title="Sign out">
+                <LogOut size={16} />
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="panel">
