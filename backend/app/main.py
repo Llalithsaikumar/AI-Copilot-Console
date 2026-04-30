@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -34,6 +34,7 @@ from app.services.metrics import MetricsRecorder
 from app.services.orchestrator import Orchestrator
 from app.services.retrieval import RetrievalService
 from app.services.suggestions import suggest_queries_for_document
+from app.auth.dependencies import get_current_user
 from app.auth.routes import router as auth_router
 
 
@@ -146,12 +147,17 @@ async def prometheus_metrics() -> PlainTextResponse:
 
 
 @app.post("/v1/query", response_model=QueryResponse)
-async def query(request: QueryRequest) -> QueryResponse:
+async def query(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user),
+) -> QueryResponse:
     request_id = str(uuid4())
     started = time.perf_counter()
     services = container()
     try:
-        response = await services.orchestrator.handle_query(request, request_id)
+        response = await services.orchestrator.handle_query(
+            request, request_id, user_id=user_id
+        )
         services.metrics.record_query(
             response.mode_used,
             response.metrics,
@@ -192,6 +198,7 @@ async def query_stream(request: QueryRequest) -> StreamingResponse:
                     request,
                     request_id,
                     on_token=on_token,
+                    user_id=user_id,
                 )
             )
             while True:
@@ -263,6 +270,7 @@ def _stream_tokens(answer: str) -> list[str]:
 async def upload_document(
     file: UploadFile = File(...),
     session_id: str | None = Form(default=None),
+    user_id: str = Depends(get_current_user),
 ) -> DocumentUploadResponse:
     started = time.perf_counter()
     services = container()
@@ -275,6 +283,7 @@ async def upload_document(
             file.filename or "document",
             text,
             session_id=session_id,
+            user_id=user_id,
         )
         services.metrics.record_http(
             "/v1/documents/upload",
@@ -302,18 +311,29 @@ async def upload_document(
 
 
 @app.get("/v1/documents", response_model=list[DocumentRecord])
-async def list_documents(session_id: str | None = Query(default=None)) -> list[DocumentRecord]:
-    return container().retriever.list_documents(session_id=session_id)
+async def list_documents(
+    session_id: str | None = Query(default=None),
+    user_id: str = Depends(get_current_user),
+) -> list[DocumentRecord]:
+    return container().retriever.list_documents(
+        session_id=session_id, user_id=user_id
+    )
 
 
 @app.get("/v1/sessions/{session_id}/history", response_model=HistoryResponse)
-async def session_history(session_id: str) -> HistoryResponse:
+async def session_history(
+    session_id: str,
+    user_id: str = Depends(get_current_user),
+) -> HistoryResponse:
     turns = container().memory.list_turns(session_id)
     return HistoryResponse(session_id=session_id, turns=turns)
 
 
 @app.get("/v1/sessions/{session_id}/metrics", response_model=SessionMetricsResponse)
-async def session_metrics(session_id: str) -> SessionMetricsResponse:
+async def session_metrics(
+    session_id: str,
+    user_id: str = Depends(get_current_user),
+) -> SessionMetricsResponse:
     return SessionMetricsResponse(**container().metrics.session_metrics(session_id))
 
 
