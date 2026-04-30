@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
 
+    # JWT settings
+    secret_key: str = Field(
+        default="change-me-in-production-use-env-var",
+        alias="SECRET_KEY",
+    )
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
