@@ -2,19 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Show, SignIn, useAuth, useUser } from "@clerk/react";
 import { Toaster, toast } from "sonner";
-import {
-  getSessionMetrics,
-  getHistory,
-  getMetrics,
-  listDocuments,
-  listSessions,
-  queryCopilot,
-  queryCopilotStream,
-  uploadDocument,
-  deleteDocument,
-  deleteSession,
-  setApiAuth
-} from "./api.js";
+import { useApi } from "./hooks/useApi.js";
 import { cacheKeySource, sha256Hex } from "./lib/hashQuery.js";
 import { createLruCache } from "./lib/lruCache.js";
 import {
@@ -62,8 +50,20 @@ function buildCachePayload(query, response) {
 
 export default function App() {
   const { user } = useUser();
-  const { getToken } = useAuth();
   const accountId = user?.id;
+  const {
+    generateSessionId,
+    queryCopilot,
+    queryCopilotStream,
+    uploadDocument,
+    listDocuments,
+    deleteDocument,
+    listSessions,
+    getHistory,
+    deleteSession,
+    getMetrics,
+    getSessionMetrics,
+  } = useApi();
 
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
@@ -89,10 +89,6 @@ export default function App() {
   const memoryCacheRef = useRef(createLruCache(64));
 
   useEffect(() => {
-    setApiAuth(() => getToken());
-  }, [getToken]);
-
-  useEffect(() => {
     if (!accountId) return;
     memoryCacheRef.current.clear();
     setResponse(null);
@@ -103,18 +99,21 @@ export default function App() {
     setHasCompletedTurn(false);
     let sid = getActiveSessionId(accountId);
     if (!sid || !sid.startsWith(`${accountId}:`)) {
-      sid = `${accountId}:${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
-      setActiveSessionId(accountId, sid);
-      upsertSessionRecord(accountId, {
-        sessionId: sid,
-        accountId,
-        mode: "auto",
-        createdAt: new Date().toISOString(),
-        lastActiveAt: new Date().toISOString()
-      });
+      generateSessionId().then(newSid => {
+        setActiveSessionId(accountId, newSid);
+        upsertSessionRecord(accountId, {
+          sessionId: newSid,
+          accountId,
+          mode: "auto",
+          createdAt: new Date().toISOString(),
+          lastActiveAt: new Date().toISOString()
+        });
+        setSessionId(newSid);
+      }).catch(console.error);
+    } else {
+      setSessionId(sid);
     }
-    setSessionId(sid);
-  }, [accountId]);
+  }, [accountId, generateSessionId]);
 
   const refreshSideData = useCallback(async () => {
     if (!sessionId || !accountId) return;
@@ -314,9 +313,9 @@ export default function App() {
     }
   }
 
-  function handleNewSession() {
+  async function handleNewSession() {
     if (!accountId) return;
-    const sid = `${accountId}:${crypto.randomUUID()}`;
+    const sid = await generateSessionId();
     setActiveSessionId(accountId, sid);
     upsertSessionRecord(accountId, {
       sessionId: sid,
