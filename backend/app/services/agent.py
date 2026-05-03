@@ -102,6 +102,7 @@ class AgentPipeline:
         history: list[dict[str, str]],
         context_chunks: list[RetrievedChunk],
         top_k: int,
+        account_id: str,
         session_id: str | None = None,
         filters: dict[str, Any] | None = None,
     ) -> AgentRun:
@@ -126,6 +127,7 @@ class AgentPipeline:
                     tool_input,
                     chunks,
                     top_k,
+                    account_id,
                     session_id,
                     filters,
                 )
@@ -185,13 +187,15 @@ class AgentPipeline:
         tool_input: str,
         chunks: list[RetrievedChunk],
         top_k: int,
+        account_id: str,
         session_id: str | None,
         filters: dict[str, Any] | None,
     ) -> str | list[RetrievedChunk]:
         if tool == "retrieval":
             return await self.retriever.retrieve(
                 tool_input,
-                top_k=top_k,
+                top_k,
+                account_id=account_id,
                 session_id=session_id,
                 filters=filters,
             )

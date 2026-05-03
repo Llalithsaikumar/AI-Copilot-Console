@@ -1,46 +1,73 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  AlertCircle,
-  Database,
-  FileText,
-  History,
-  Loader2,
-  Send,
-  Upload
-} from "lucide-react";
-import {
-  Show,
-  SignIn,
-  UserButton,
-} from "@clerk/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle } from "lucide-react";
+import { Show, SignIn, useAuth, useUser } from "@clerk/react";
+import { Toaster, toast } from "sonner";
 import {
   getSessionMetrics,
   getHistory,
   getMetrics,
   listDocuments,
+  listSessions,
   queryCopilot,
   queryCopilotStream,
-  uploadDocument
+  uploadDocument,
+  deleteDocument,
+  deleteSession,
+  setApiAuth
 } from "./api.js";
+import { cacheKeySource, sha256Hex } from "./lib/hashQuery.js";
+import { createLruCache } from "./lib/lruCache.js";
+import {
+  idbClearAccount,
+  idbGet,
+  idbInvalidateByDocumentId,
+  idbSet
+} from "./lib/idbCache.js";
+import {
+  getActiveSessionId,
+  readSessionRegistry,
+  setActiveSessionId,
+  upsertSessionRecord,
+  writeSessionRegistry
+} from "./lib/accountStorage.js";
 
-const MODES = ["auto", "llm", "rag", "agent"];
-const TABS = ["Answer", "Context", "Trace", "Agent Steps", "Metrics"];
+import Sidebar from "./components/Sidebar";
+import AppHeader from "./components/AppHeader";
+import ModeSelector from "./components/ModeSelector";
+import QueryInput from "./components/QueryInput";
+import ResponsePanel from "./components/ResponsePanel";
+import ConfirmModal from "./components/ConfirmModal";
 
-function createSessionId() {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
+function extractDocumentIds(response) {
+  const ids = new Set();
+  for (const ch of response?.retrieved_chunks || []) {
+    const id = ch.metadata?.document_id;
+    if (id) ids.add(String(id));
   }
-  return `session-${Date.now()}`;
+  return [...ids];
+}
+
+function buildCachePayload(query, response) {
+  return {
+    query,
+    answer: response.answer,
+    context: response.retrieved_chunks,
+    trace: response.trace,
+    agentSteps: response.agent_steps,
+    metrics: response.metrics,
+    timestamp: new Date().toISOString(),
+    documentIds: extractDocumentIds(response)
+  };
 }
 
 export default function App() {
-  const [sessionId] = useState(() => {
-    const existing = localStorage.getItem("copilot.sessionId");
-    if (existing) return existing;
-    const created = createSessionId();
-    localStorage.setItem("copilot.sessionId", created);
-    return created;
-  });
+  const { user } = useUser();
+  const { getToken } = useAuth();
+  const accountId = user?.id;
+
+  const [sessionId, setSessionId] = useState("");
+  const [sessions, setSessions] = useState([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState("auto");
   const [activeTab, setActiveTab] = useState("Answer");
@@ -56,51 +83,135 @@ export default function App() {
   const [error, setError] = useState("");
   const [uploadStatus, setUploadStatus] = useState("");
   const [suggestedQueries, setSuggestedQueries] = useState([]);
+  const [confirm, setConfirm] = useState(null);
+  const [hasCompletedTurn, setHasCompletedTurn] = useState(false);
 
-  const selectedMetrics = response?.metrics || {};
-  const citations = response?.citations || [];
-  const chunks = response?.retrieved_chunks || [];
-  const agentSteps = response?.agent_steps || [];
-  const trace = response?.trace || [];
+  const memoryCacheRef = useRef(createLruCache(64));
 
   useEffect(() => {
-    refreshSideData();
-  }, [sessionId]);
+    setApiAuth(() => getToken());
+  }, [getToken]);
 
-  async function refreshSideData() {
+  useEffect(() => {
+    if (!accountId) return;
+    memoryCacheRef.current.clear();
+    setResponse(null);
+    setQuery("");
+    setHistory([]);
+    setSessions([]);
+    setDocuments([]);
+    setHasCompletedTurn(false);
+    let sid = getActiveSessionId(accountId);
+    if (!sid || !sid.startsWith(`${accountId}:`)) {
+      sid = `${accountId}:${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+      setActiveSessionId(accountId, sid);
+      upsertSessionRecord(accountId, {
+        sessionId: sid,
+        accountId,
+        mode: "auto",
+        createdAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString()
+      });
+    }
+    setSessionId(sid);
+  }, [accountId]);
+
+  const refreshSideData = useCallback(async () => {
+    if (!sessionId || !accountId) return;
     try {
-      const [historyPayload, docsPayload, metricsPayload, sessionMetricsPayload] =
+      const [sessionsPayload, historyPayload, docsPayload, metricsPayload, sessionMetricsPayload] =
         await Promise.all([
+          listSessions().catch(() => []),
           getHistory(sessionId),
           listDocuments(sessionId),
           getMetrics(),
           getSessionMetrics(sessionId)
         ]);
+      setSessions(Array.isArray(sessionsPayload) ? sessionsPayload : []);
       setHistory(historyPayload.turns || []);
       setDocuments(docsPayload || []);
       setMetricsSnapshot(metricsPayload || null);
       setSessionMetrics(sessionMetricsPayload || null);
+
+      for (const row of sessionsPayload || []) {
+        upsertSessionRecord(accountId, {
+          sessionId: row.session_id,
+          accountId,
+          mode: row.mode || "auto",
+          createdAt: row.last_active_at,
+          lastActiveAt: row.last_active_at,
+          lastQueryPreview: row.last_query_preview
+        });
+      }
     } catch {
       setMetricsSnapshot(null);
       setSessionMetrics(null);
     }
-  }
+  }, [sessionId, accountId]);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    await submitQuery();
-  }
+  useEffect(() => {
+    refreshSideData();
+  }, [refreshSideData]);
+
+  const mergeClientCacheMetrics = (baseMetrics, layer, hitAt) => ({
+    ...baseMetrics,
+    client_cache_hit: true,
+    client_cache_layer: layer,
+    client_cache_hit_at: hitAt
+  });
+
+  const applyCachedResponse = useCallback(
+    (cached, layer) => {
+      const hitAt = new Date().toISOString();
+      setResponse({
+        ...cached.response,
+        metrics: mergeClientCacheMetrics(cached.response.metrics || {}, layer, hitAt)
+      });
+      setHasCompletedTurn(true);
+      setActiveTab("Answer");
+      toast.message(`Served from ${layer} cache`, { description: hitAt });
+    },
+    []
+  );
 
   async function submitQuery() {
-    if (!query.trim() || isQuerying) return;
+    if (!query.trim() || isQuerying || !sessionId) return;
     setIsQuerying(true);
     setError("");
     setActiveTab("Answer");
+    const q = query.trim();
     const payload = {
-      query: query.trim(),
+      query: q,
       session_id: sessionId,
       mode
     };
+
+    const keySrc = cacheKeySource(sessionId, mode, q);
+    const hashKey = await sha256Hex(keySrc);
+
+    const mem = memoryCacheRef.current.get(hashKey);
+    if (mem?.response) {
+      applyCachedResponse(mem, "memory");
+      setQuery("");
+      setIsQuerying(false);
+      await refreshSideData();
+      return;
+    }
+
+    try {
+      const idbRow = await idbGet(accountId, hashKey);
+      if (idbRow?.response) {
+        memoryCacheRef.current.set(hashKey, idbRow);
+        applyCachedResponse(idbRow, "persisted");
+        setQuery("");
+        setIsQuerying(false);
+        await refreshSideData();
+        return;
+      }
+    } catch {
+      /* ignore idb */
+    }
+
     setResponse({
       answer: "",
       session_id: sessionId,
@@ -112,6 +223,33 @@ export default function App() {
       metrics: {},
       request_id: "streaming"
     });
+
+    const finalizeAndStore = async (finalResponse) => {
+      setResponse(finalResponse);
+      if (finalResponse?.error) {
+        setError(finalResponse.answer || "Temporary issue, retrying...");
+        return;
+      }
+      setHasCompletedTurn(true);
+      const entry = {
+        response: finalResponse,
+        raw: buildCachePayload(q, finalResponse)
+      };
+      memoryCacheRef.current.set(hashKey, entry);
+      try {
+        await idbSet(accountId, hashKey, entry);
+      } catch {
+        /* ignore */
+      }
+      upsertSessionRecord(accountId, {
+        sessionId,
+        accountId,
+        mode,
+        lastActiveAt: new Date().toISOString(),
+        lastQueryPreview: q
+      });
+    };
+
     try {
       await queryCopilotStream(
         payload,
@@ -121,11 +259,8 @@ export default function App() {
             answer: `${current?.answer || ""}${token}`
           }));
         },
-        (finalResponse) => {
-          setResponse(finalResponse);
-          if (finalResponse?.error) {
-            setError(finalResponse.answer || "Temporary issue, retrying...");
-          }
+        async (finalResponse) => {
+          await finalizeAndStore(finalResponse);
         },
         (event) => {
           if (event?.answer) setError(event.answer);
@@ -136,7 +271,7 @@ export default function App() {
     } catch (err) {
       try {
         const fallback = await queryCopilot(payload);
-        setResponse(fallback);
+        await finalizeAndStore(fallback);
         if (fallback?.error) {
           setError(fallback.answer || "Temporary issue, retrying...");
         }
@@ -165,22 +300,124 @@ export default function App() {
     try {
       const payload = await uploadDocument(file, sessionId);
       setUploadStatus(
-        `${payload.file_name}: ${payload.chunks_indexed} indexed, ${payload.chunks_skipped} skipped`
+        `${payload.file_name}: ${payload.chunks_indexed} indexed, ${payload.chunks_skipped} skipped (${payload.status})`
       );
       setSuggestedQueries(payload.suggested_queries || []);
       await refreshSideData();
+      toast.success("File uploaded");
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setIsUploading(false);
       event.target.value = "";
     }
   }
 
-  const routeBadge = useMemo(() => {
-    if (!response) return "idle";
-    return `${response.mode_used} / ${selectedMetrics.route_decision || "route"}`;
-  }, [response, selectedMetrics.route_decision]);
+  function handleNewSession() {
+    if (!accountId) return;
+    const sid = `${accountId}:${crypto.randomUUID()}`;
+    setActiveSessionId(accountId, sid);
+    upsertSessionRecord(accountId, {
+      sessionId: sid,
+      accountId,
+      mode,
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString()
+    });
+    setSessionId(sid);
+    setResponse(null);
+    setHistory([]);
+    toast.success("New session");
+  }
+
+  function handleSelectSession(sid) {
+    setActiveSessionId(accountId, sid);
+    setSessionId(sid);
+    setResponse(null);
+  }
+
+  function requestDeleteSession(sid) {
+    setConfirm({
+      title: "Delete session?",
+      message: "Removes server-side conversation history for this session.",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteSession(sid);
+          const reg = readSessionRegistry(accountId).filter((x) => x.sessionId !== sid);
+          writeSessionRegistry(accountId, reg);
+          toast.success("Session cleared");
+          if (sid === sessionId) {
+            handleNewSession();
+          }
+          await refreshSideData();
+        } catch (e) {
+          toast.error(e.message);
+        }
+        setConfirm(null);
+      }
+    });
+  }
+
+  function requestDeleteFile(doc) {
+    setConfirm({
+      title: "Delete file?",
+      message: `Remove ${doc.file_name} from the index and invalidate matching cache entries.`,
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDocument(doc.document_id);
+          await idbInvalidateByDocumentId(accountId, doc.document_id);
+          memoryCacheRef.current.clear();
+          toast.success("File deleted");
+          await refreshSideData();
+        } catch (e) {
+          toast.error(e.message);
+        }
+        setConfirm(null);
+      }
+    });
+  }
+
+  async function handleClearSessionCache() {
+    memoryCacheRef.current.clear();
+    toast.success("In-memory cache cleared for this browser tab");
+  }
+
+  async function handleClearAllCache() {
+    setConfirm({
+      title: "Clear all persisted cache?",
+      message: "Removes all IndexedDB cached query responses for your account on this device.",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await idbClearAccount(accountId);
+          memoryCacheRef.current.clear();
+          toast.success("Cache cleared");
+        } catch {
+          toast.error("Could not clear cache");
+        }
+        setConfirm(null);
+      }
+    });
+  }
+
+  const selectedMetrics = useMemo(() => {
+    const base = response?.metrics || metricsSnapshot || {};
+    return base;
+  }, [response, metricsSnapshot]);
+
+  const routeBadge = response
+    ? `${response.mode_used} / ${selectedMetrics.route_decision || "route"}`
+    : "idle";
+
+  const role =
+    user?.publicMetadata?.role ||
+    user?.unsafeMetadata?.role ||
+    (Array.isArray(user?.organizationMemberships) &&
+      user.organizationMemberships[0]?.role) ||
+    "";
 
   return (
     <>
@@ -188,351 +425,95 @@ export default function App() {
         <div className="login-screen">
           <div className="login-brand">
             <h1>AI Copilot Console</h1>
-            <p>Welcome back! Please sign in to access your dashboard.</p>
+            <p>Welcome back. Sign in to continue.</p>
           </div>
           <SignIn />
         </div>
       </Show>
-      
+
       <Show when="signed-in">
-        <main className="app-shell">
-          <aside className="sidebar">
-            <section className="brand-block">
-              <div>
-                <h1>AI Copilot Console</h1>
-                <p>{routeBadge}</p>
-              </div>
-              <div className="auth-buttons">
-                <UserButton />
+        <Toaster richColors position="top-center" />
+        <ConfirmModal
+          open={!!confirm}
+          title={confirm?.title}
+          message={confirm?.message}
+          danger={confirm?.danger}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            void confirm?.onConfirm?.();
+          }}
+        />
+        <div className="app-layout">
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            setCollapsed={setSidebarCollapsed}
+            sessionId={sessionId}
+            sessions={sessions}
+            onSelectSession={handleSelectSession}
+            onNewSession={handleNewSession}
+            onDeleteSession={requestDeleteSession}
+            history={history}
+            documents={documents}
+            routeBadge={routeBadge}
+            isUploading={isUploading}
+            handleUpload={handleUpload}
+            uploadStatus={uploadStatus}
+            setResponse={setResponse}
+            onDeleteFile={requestDeleteFile}
+            onClearSessionCache={handleClearSessionCache}
+            onClearAllCache={handleClearAllCache}
+          />
+
+          <div className="workspace-column">
+            <AppHeader
+              subtitle={routeBadge}
+              accountName={user?.fullName || user?.primaryEmailAddress?.emailAddress || "User"}
+              role={role}
+            />
+
+            <section className="workspace">
+              <div className="main-content">
+                <ModeSelector
+                  mode={mode}
+                  setMode={setMode}
+                  showSources={showSources}
+                  setShowSources={setShowSources}
+                  showTrace={showTrace}
+                  setShowTrace={setShowTrace}
+                />
+
+                <QueryInput
+                  query={query}
+                  setQuery={setQuery}
+                  submitQuery={submitQuery}
+                  handleQueryKeyDown={handleQueryKeyDown}
+                  isQuerying={isQuerying}
+                  suggestedQueries={suggestedQueries}
+                />
+
+                {error && (
+                  <div className="error-banner glass-panel">
+                    <AlertCircle size={18} className="danger" />
+                    <span className="danger">{error}</span>
+                  </div>
+                )}
+
+                <ResponsePanel
+                  response={response}
+                  activeTab={activeTab}
+                  setActiveTab={setActiveTab}
+                  showSources={showSources}
+                  showTrace={showTrace}
+                  isQuerying={isQuerying}
+                  metricsSnapshot={selectedMetrics}
+                  sessionMetrics={sessionMetrics}
+                  hasCompletedTurn={hasCompletedTurn}
+                />
               </div>
             </section>
-
-        <section className="panel">
-          <header className="panel-header">
-            <History size={18} aria-hidden="true" />
-            <h2>Session</h2>
-          </header>
-          <code className="session-id">{sessionId}</code>
-          <div className="history-list">
-            {history.length === 0 ? (
-              <p className="empty-state">No turns recorded.</p>
-            ) : (
-              history.slice(-8).map((turn) => (
-                <button
-                  className="history-item"
-                  key={turn.id}
-                  type="button"
-                  onClick={() =>
-                    setResponse({
-                      answer: turn.system_response,
-                      session_id: turn.session_id,
-                      mode_used: turn.mode_used,
-                      citations: turn.metadata?.citations || [],
-                      retrieved_chunks: [],
-                      agent_steps: [],
-                      trace: turn.metadata?.trace || [],
-                      metrics: turn.metadata?.metrics || {},
-                      request_id: turn.request_id
-                    })
-                  }
-                >
-                  <span>{turn.mode_used}</span>
-                  <strong>{turn.user_input}</strong>
-                </button>
-              ))
-            )}
           </div>
-        </section>
-
-        <section className="panel">
-          <header className="panel-header">
-            <Database size={18} aria-hidden="true" />
-            <h2>Knowledge</h2>
-          </header>
-          <label className="upload-button">
-            {isUploading ? (
-              <Loader2 className="spin" size={18} aria-hidden="true" />
-            ) : (
-              <Upload size={18} aria-hidden="true" />
-            )}
-            <span>{isUploading ? "Indexing" : "Upload"}</span>
-            <input
-              accept=".pdf,.txt,.md,.markdown"
-              disabled={isUploading}
-              onChange={handleUpload}
-              type="file"
-            />
-          </label>
-          {uploadStatus && <p className="status-line">{uploadStatus}</p>}
-          <div className="document-list">
-            {documents.length === 0 ? (
-              <p className="empty-state">No indexed files.</p>
-            ) : (
-              documents.map((document) => (
-                <div className="document-item" key={document.document_id}>
-                  <FileText size={16} aria-hidden="true" />
-                  <div>
-                    <strong>{document.file_name}</strong>
-                    <span>{document.chunks} chunks</span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      </aside>
-
-      <section className="workspace">
-        <form className="composer" onSubmit={handleSubmit}>
-          <div className="mode-switch" aria-label="Query mode">
-            {MODES.map((item) => (
-              <button
-                className={mode === item ? "active" : ""}
-                key={item}
-                onClick={() => setMode(item)}
-                type="button"
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="toggle-row" aria-label="Display options">
-            <label>
-              <input
-                checked={showSources}
-                onChange={(event) => setShowSources(event.target.checked)}
-                type="checkbox"
-              />
-              <span>Show sources</span>
-            </label>
-            <label>
-              <input
-                checked={showTrace}
-                onChange={(event) => setShowTrace(event.target.checked)}
-                type="checkbox"
-              />
-              <span>Show agent trace</span>
-            </label>
-          </div>
-          <div className="query-row">
-            <textarea
-              aria-label="Query"
-              onKeyDown={handleQueryKeyDown}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Ask for a grounded answer, retrieval, or agent analysis"
-              value={query}
-            />
-            <button className="send-button" disabled={isQuerying} type="submit">
-              {isQuerying ? (
-                <Loader2 className="spin" size={20} aria-hidden="true" />
-              ) : (
-                <Send size={20} aria-hidden="true" />
-              )}
-              <span>{isQuerying ? "Running" : "Send"}</span>
-            </button>
-          </div>
-          {suggestedQueries.length > 0 && (
-            <div className="suggestion-row" aria-label="Suggested queries">
-              {suggestedQueries.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  onClick={() => setQuery(suggestion)}
-                  type="button"
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          )}
-        </form>
-
-        {error && (
-          <div className="error-banner" role="alert">
-            <AlertCircle size={18} aria-hidden="true" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        <section className="response-shell">
-          <nav className="tabs" aria-label="Response sections">
-            {TABS.map((tab) => (
-              <button
-                className={activeTab === tab ? "active" : ""}
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                type="button"
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
-
-          <div className="response-body">
-            {activeTab === "Answer" && (
-              <AnswerPanel
-                answer={response?.answer}
-                citations={citations}
-                showSources={showSources}
-              />
-            )}
-            {activeTab === "Context" && (
-              <ContextPanel chunks={chunks} showSources={showSources} />
-            )}
-            {activeTab === "Trace" && (
-              <TracePanel trace={trace} showTrace={showTrace} />
-            )}
-            {activeTab === "Agent Steps" && <AgentPanel steps={agentSteps} />}
-            {activeTab === "Metrics" && (
-              <MetricsPanel
-                metrics={selectedMetrics}
-                metricsSnapshot={metricsSnapshot}
-                sessionMetrics={sessionMetrics}
-                requestId={response?.request_id}
-              />
-            )}
-          </div>
-        </section>
-      </section>
-        </main>
+        </div>
       </Show>
     </>
-  );
-}
-
-function AnswerPanel({ answer, citations, showSources }) {
-  return (
-    <div className="answer-panel">
-      <article className="answer-text">
-        {answer ? <p>{answer}</p> : <p className="empty-state">No answer yet.</p>}
-      </article>
-      {showSources && citations.length > 0 && (
-        <section className="citation-band">
-          <h3>Citations</h3>
-          <div className="citation-grid">
-            {citations.map((citation) => (
-              <div className="citation" key={citation.chunk_id}>
-                <strong>{citation.source}</strong>
-                <span>
-                  chunk {citation.chunk_index}
-                  {typeof citation.score === "number"
-                    ? ` / ${citation.score.toFixed(3)}`
-                    : ""}
-                </span>
-                <p>{citation.quote}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function ContextPanel({ chunks, showSources }) {
-  if (!showSources) {
-    return <p className="empty-state">Sources are hidden.</p>;
-  }
-  if (chunks.length === 0) {
-    return <p className="empty-state">No retrieved context for this turn.</p>;
-  }
-  return (
-    <div className="context-list">
-      {chunks.map((chunk) => (
-        <article className="context-item" key={chunk.id}>
-          <header>
-            <strong>{chunk.source}</strong>
-            <span>
-              chunk {chunk.chunk_index}
-              {typeof chunk.score === "number" ? ` / ${chunk.score.toFixed(3)}` : ""}
-            </span>
-          </header>
-          <p>{chunk.text}</p>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function TracePanel({ trace, showTrace }) {
-  if (!showTrace) {
-    return <p className="empty-state">Agent trace is hidden.</p>;
-  }
-  if (trace.length === 0) {
-    return <p className="empty-state">No trace for this turn.</p>;
-  }
-  return (
-    <div className="step-list">
-      {trace.map((item, index) => (
-        <article className="step-item" key={`${item.step}-${index}`}>
-          <header>
-            <strong>{index + 1}</strong>
-            <span>{item.step}</span>
-          </header>
-          <pre>{JSON.stringify(item.meta || {}, null, 2)}</pre>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function AgentPanel({ steps }) {
-  if (steps.length === 0) {
-    return <p className="empty-state">No agent steps for this turn.</p>;
-  }
-  return (
-    <div className="step-list">
-      {steps.map((step) => (
-        <article className="step-item" key={step.step_id}>
-          <header>
-            <strong>{step.step_id}</strong>
-            <span>{step.tool}</span>
-            <em>{step.status}</em>
-          </header>
-          <p>{step.output}</p>
-          <small>{Math.round(step.latency_ms)} ms</small>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function MetricsPanel({ metrics, metricsSnapshot, sessionMetrics, requestId }) {
-  const renderedMetrics =
-    typeof metricsSnapshot === "string"
-      ? metricsSnapshot
-      : JSON.stringify(metricsSnapshot || {}, null, 2);
-
-  return (
-    <div className="metrics-grid">
-      <Metric label="Latency" value={`${Math.round(metrics.latency_ms || 0)} ms`} />
-      <Metric
-        label="Retrieval"
-        value={`${Math.round(metrics.retrieval_time_ms || 0)} ms`}
-      />
-      <Metric label="Tokens" value={metrics.tokens || metrics.total_tokens || 0} />
-      <Metric label="Prompt" value={metrics.prompt_tokens || 0} />
-      <Metric label="Completion" value={metrics.completion_tokens || 0} />
-      <Metric label="Total" value={metrics.total_tokens || 0} />
-      <Metric label="Cost" value={metrics.cost ?? "n/a"} />
-      <Metric label="Session Tokens" value={sessionMetrics?.total_tokens || 0} />
-      <Metric label="Session Cost" value={sessionMetrics?.total_cost ?? 0} />
-      <Metric label="Cache" value={metrics.cache_hit ? "hit" : "miss"} />
-      <Metric label="Provider" value={metrics.provider || "n/a"} />
-      <Metric label="Fallback" value={metrics.fallback_used ? "yes" : "no"} />
-      <Metric label="Request" value={requestId || "n/a"} wide />
-      <Metric label="Route" value={metrics.route_decision || "n/a"} wide />
-      <pre className="metrics-text">
-        {renderedMetrics === "{}" ? "No metrics collected." : renderedMetrics}
-      </pre>
-    </div>
-  );
-}
-
-function Metric({ label, value, wide = false }) {
-  return (
-    <div className={wide ? "metric wide" : "metric"}>
-      <span>{label}</span>
-      <strong>{String(value)}</strong>
-    </div>
   );
 }

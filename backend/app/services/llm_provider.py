@@ -89,6 +89,9 @@ class OpenRouterClient:
         content = message.get("content") or ""
         usage = data.get("usage") or {}
         usage["provider"] = "openrouter"
+        usage["model"] = data.get("model") or getattr(
+            self.settings, "openrouter_chat_model", None
+        )
         return LLMResponse(content=content, usage=usage, raw=data)
 
     async def chat_stream(
@@ -254,6 +257,7 @@ class GeminiClient:
             ),
             "total_tokens": int(usage_metadata.get("totalTokenCount") or 0),
             "provider": "gemini",
+            "model": self.settings.gemini_chat_model,
         }
         return LLMResponse(content=content, usage=usage, raw=data)
 

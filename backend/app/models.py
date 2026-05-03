@@ -71,9 +71,12 @@ class ResponseMetrics(BaseModel):
     total_tokens: int = 0
     cost: float | None = None
     provider: str | None = None
+    model: str | None = None
     fallback_used: bool = False
     route_decision: str
     cache_hit: bool = False
+    retrieval_chunk_count: int = 0
+    agent_step_count: int = 0
     error: str | None = None
 
 
@@ -103,7 +106,12 @@ class DocumentRecord(BaseModel):
     document_id: str
     file_name: str
     chunks: int
+    chunks_skipped: int = 0
+    size_bytes: int | None = None
+    mime_type: str | None = None
+    status: str = "indexed"
     updated_at: str
+    uploaded_at: str | None = None
 
 
 class HistoryTurn(BaseModel):
@@ -128,3 +136,11 @@ class SessionMetricsResponse(BaseModel):
     total_tokens: int = 0
     total_cost: float = 0.0
     avg_latency_ms: float = 0.0
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    turn_count: int = 0
+    last_active_at: str = ""
+    last_query_preview: str = ""
+    mode: str | None = None

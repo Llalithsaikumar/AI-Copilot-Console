@@ -3,14 +3,41 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../src/App.jsx";
 import * as api from "../src/api.js";
 
+vi.mock("@clerk/react", () => ({
+  useUser: () => ({
+    isLoaded: true,
+    isSignedIn: true,
+    user: {
+      id: "user_test",
+      fullName: "Test User",
+      primaryEmailAddress: { emailAddress: "t@example.com" },
+      publicMetadata: {},
+      organizationMemberships: []
+    }
+  }),
+  useAuth: () => ({
+    getToken: vi.fn(async () => "test-jwt")
+  }),
+  UserButton: () => null,
+  Show: ({ children, when }) => {
+    if (when === "signed-in") return <>{children}</>;
+    return null;
+  },
+  SignIn: () => null
+}));
+
 vi.mock("../src/api.js", () => ({
+  setApiAuth: vi.fn(),
   getHistory: vi.fn(),
   getMetrics: vi.fn(),
   getSessionMetrics: vi.fn(),
   listDocuments: vi.fn(),
+  listSessions: vi.fn(),
   queryCopilot: vi.fn(),
   queryCopilotStream: vi.fn(),
-  uploadDocument: vi.fn()
+  uploadDocument: vi.fn(),
+  deleteDocument: vi.fn(),
+  deleteSession: vi.fn()
 }));
 
 beforeEach(() => {
@@ -48,6 +75,7 @@ beforeEach(() => {
     },
     request_id: "request-1"
   };
+  api.listSessions.mockResolvedValue([]);
   api.getHistory.mockResolvedValue({ turns: [] });
   api.getMetrics.mockResolvedValue({
     avg_latency: 12,
@@ -172,10 +200,10 @@ test("toggles source visibility", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
-  await screen.findByText("report.txt");
+  await screen.findByText(/report\.txt/);
   fireEvent.click(screen.getByLabelText("Show sources"));
 
-  expect(screen.queryByText("report.txt")).not.toBeInTheDocument();
+  expect(screen.queryByText(/report\.txt/)).not.toBeInTheDocument();
 });
 
 test("toggles trace visibility", async () => {
@@ -190,7 +218,7 @@ test("toggles trace visibility", async () => {
   await screen.findByText("route");
   fireEvent.click(screen.getByLabelText("Show agent trace"));
 
-  expect(screen.getByText("Agent trace is hidden.")).toBeInTheDocument();
+  expect(screen.getByText("Trace is hidden.")).toBeInTheDocument();
 });
 
 test("falls back to blocking query when streaming fails", async () => {

@@ -37,10 +37,10 @@ class FakeRetriever:
             metadata={},
         )
 
-    async def retrieve(self, query, top_k, session_id=None, filters=None):
+    async def retrieve(self, query, top_k, *, account_id, session_id=None, filters=None):
         return [self.chunk]
 
-    def all_chunks(self, session_id=None, filters=None):
+    def all_chunks(self, *, account_id, session_id=None, filters=None):
         return [self.chunk]
 
     def revision(self):
@@ -55,6 +55,7 @@ class FakeAgent:
         history,
         context_chunks,
         top_k,
+        account_id,
         session_id=None,
         filters=None,
     ):
@@ -124,7 +125,11 @@ def test_rag_query_returns_citations(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-1"))
+    response = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-1", account_id="legacy"
+        )
+    )
 
     assert response.mode_used == QueryMode.RAG
     assert response.citations[0].source == "report.txt"
@@ -148,7 +153,11 @@ def test_agent_query_returns_steps(tmp_path):
         mode=QueryMode.AGENT,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-2"))
+    response = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-2", account_id="legacy"
+        )
+    )
 
     assert response.mode_used == QueryMode.AGENT
     assert response.answer == "agent answer"
@@ -165,7 +174,11 @@ def test_email_lookup_uses_local_extractor(tmp_path):
         mode=QueryMode.AUTO,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-3"))
+    response = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-3", account_id="legacy"
+        )
+    )
 
     assert response.mode_used == QueryMode.RAG
     assert "person@example.com" in response.answer
@@ -180,8 +193,16 @@ def test_repeated_query_returns_cache_hit(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    first = asyncio.run(orchestrator.handle_query(request, request_id="request-1"))
-    second = asyncio.run(orchestrator.handle_query(request, request_id="request-2"))
+    first = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-1", account_id="legacy"
+        )
+    )
+    second = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-2", account_id="legacy"
+        )
+    )
 
     assert first.metrics.cache_hit is False
     assert second.metrics.cache_hit is True
@@ -202,7 +223,11 @@ def test_llm_failure_returns_graceful_error_response(tmp_path):
         mode=QueryMode.RAG,
     )
 
-    response = asyncio.run(orchestrator.handle_query(request, request_id="request-error"))
+    response = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-error", account_id="legacy"
+        )
+    )
 
     assert response.error is True
     assert response.answer == "Temporary issue, retrying..."

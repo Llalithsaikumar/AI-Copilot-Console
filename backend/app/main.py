@@ -2,12 +2,16 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from starlette.datastructures import UploadFile as StarletteUploadFile
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
+from app.auth import get_account_id, validate_session_belongs_to_account
 from app.config import Settings, get_settings
 from app.evaluation.evaluator import (
     default_report_path,
@@ -23,6 +27,7 @@ from app.models import (
     QueryRequest,
     QueryResponse,
     SessionMetricsResponse,
+    SessionSummary,
 )
 from app.services.agent import AgentPipeline
 from app.services.cache import ResponseCache
@@ -82,7 +87,11 @@ app = FastAPI(title="AI Copilot System", version="0.1.0")
 app.state.container = build_container()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=app.state.container.settings.cors_origin_list,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://ai-copilot-console.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -128,10 +137,9 @@ async def health() -> dict:
 @app.get("/metrics")
 async def metrics() -> dict:
     services = container()
-    documents = services.retriever.list_documents()
     return services.metrics.aggregate(
-        num_documents=len(documents),
-        num_chunks=sum(document.chunks for document in documents),
+        num_documents=0,
+        num_chunks=services.retriever.revision(),
     )
 
 
@@ -146,12 +154,16 @@ async def prometheus_metrics() -> PlainTextResponse:
 @app.post("/v1/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
+    account_id: str = Depends(get_account_id),
 ) -> QueryResponse:
+    validate_session_belongs_to_account(request.session_id, account_id)
     request_id = str(uuid4())
     started = time.perf_counter()
     services = container()
     try:
-        response = await services.orchestrator.handle_query(request, request_id)
+        response = await services.orchestrator.handle_query(
+            request, request_id, account_id=account_id
+        )
         services.metrics.record_query(
             response.mode_used,
             response.metrics,
@@ -173,7 +185,11 @@ async def query(
 
 
 @app.post("/v1/query/stream")
-async def query_stream(request: QueryRequest) -> StreamingResponse:
+async def query_stream(
+    request: QueryRequest,
+    account_id: str = Depends(get_account_id),
+) -> StreamingResponse:
+    validate_session_belongs_to_account(request.session_id, account_id)
     request_id = str(uuid4())
     started = time.perf_counter()
     services = container()
@@ -192,6 +208,7 @@ async def query_stream(request: QueryRequest) -> StreamingResponse:
                     request,
                     request_id,
                     on_token=on_token,
+                    account_id=account_id,
                 )
             )
             while True:
@@ -263,19 +280,33 @@ def _stream_tokens(answer: str) -> list[str]:
 async def upload_document(
     file: UploadFile = File(...),
     session_id: str | None = Form(default=None),
+    account_id: str = Depends(get_account_id),
 ) -> DocumentUploadResponse:
+    if session_id:
+        validate_session_belongs_to_account(session_id, account_id)
     started = time.perf_counter()
     services = container()
     try:
+        raw = await file.read()
+        size_bytes = len(raw)
+        mime_type = file.content_type or "application/octet-stream"
+        wrapped = StarletteUploadFile(
+            filename=file.filename or "document",
+            file=BytesIO(raw),
+        )
         text = await extract_text_from_upload(
-            file,
+            wrapped,
             max_bytes=services.settings.max_upload_bytes,
         )
         result = await services.retriever.add_document(
             file.filename or "document",
             text,
+            account_id=account_id,
             session_id=session_id,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
         )
+        status = "indexed" if result.chunks_indexed > 0 else "skipped"
         services.metrics.record_http(
             "/v1/documents/upload",
             "200",
@@ -286,7 +317,7 @@ async def upload_document(
             file_name=file.filename or "document",
             chunks_indexed=result.chunks_indexed,
             chunks_skipped=result.chunks_skipped,
-            status="indexed",
+            status=status,
             suggested_queries=suggest_queries_for_document(
                 file.filename or "document",
                 text,
@@ -304,22 +335,61 @@ async def upload_document(
 @app.get("/v1/documents", response_model=list[DocumentRecord])
 async def list_documents(
     session_id: str | None = Query(default=None),
+    account_id: str = Depends(get_account_id),
 ) -> list[DocumentRecord]:
-    return container().retriever.list_documents(session_id=session_id)
+    if session_id:
+        validate_session_belongs_to_account(session_id, account_id)
+    return container().retriever.list_documents(
+        account_id=account_id,
+        session_id=session_id,
+    )
+
+
+@app.delete("/v1/documents/{document_id}")
+async def delete_document_endpoint(
+    document_id: str,
+    account_id: str = Depends(get_account_id),
+) -> dict:
+    deleted = container().retriever.delete_document(account_id, document_id)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted_chunks": deleted, "document_id": document_id}
+
+
+@app.get("/v1/sessions", response_model=list[SessionSummary])
+async def list_sessions(
+    account_id: str = Depends(get_account_id),
+) -> list[SessionSummary]:
+    rows = container().memory.list_sessions_for_account(account_id)
+    return [SessionSummary(**row) for row in rows]
 
 
 @app.get("/v1/sessions/{session_id}/history", response_model=HistoryResponse)
 async def session_history(
     session_id: str,
+    account_id: str = Depends(get_account_id),
 ) -> HistoryResponse:
-    turns = container().memory.list_turns(session_id)
+    validate_session_belongs_to_account(session_id, account_id)
+    turns = container().memory.list_turns(account_id, session_id)
     return HistoryResponse(session_id=session_id, turns=turns)
+
+
+@app.delete("/v1/sessions/{session_id}")
+async def delete_session_endpoint(
+    session_id: str,
+    account_id: str = Depends(get_account_id),
+) -> dict:
+    validate_session_belongs_to_account(session_id, account_id)
+    removed = container().memory.delete_turns_for_session(account_id, session_id)
+    return {"deleted_turns": removed, "session_id": session_id}
 
 
 @app.get("/v1/sessions/{session_id}/metrics", response_model=SessionMetricsResponse)
 async def session_metrics(
     session_id: str,
+    account_id: str = Depends(get_account_id),
 ) -> SessionMetricsResponse:
+    validate_session_belongs_to_account(session_id, account_id)
     return SessionMetricsResponse(**container().metrics.session_metrics(session_id))
 
 
@@ -335,7 +405,9 @@ async def evaluation_report() -> dict:
 
 
 @app.post("/v1/evaluation/run")
-async def run_evaluation_endpoint() -> dict:
+async def run_evaluation_endpoint(
+    account_id: str = Depends(get_account_id),
+) -> dict:
     services = container()
     dataset = load_dataset()
 
@@ -344,11 +416,12 @@ async def run_evaluation_endpoint() -> dict:
         response = await services.orchestrator.handle_query(
             QueryRequest(
                 query=question,
-                session_id=f"eval-{uuid4()}",
+                session_id=f"{account_id}:eval-{uuid4()}",
                 mode=QueryMode.AUTO,
                 filters=item.get("filters") or {},
             ),
             request_id=str(uuid4()),
+            account_id=account_id,
         )
         services.metrics.record_query(
             response.mode_used,
