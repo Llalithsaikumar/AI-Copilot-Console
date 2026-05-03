@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   Database,
   FileText,
   History,
   Loader2,
-  LogOut,
   Send,
   Upload
 } from "lucide-react";
 import {
+  Show,
+  SignIn,
+  UserButton,
+} from "@clerk/react";
+import {
   getSessionMetrics,
   getHistory,
   getMetrics,
-  getMe,
   listDocuments,
   queryCopilot,
   queryCopilotStream,
@@ -32,7 +34,6 @@ function createSessionId() {
 }
 
 export default function App() {
-  const navigate = useNavigate();
   const [sessionId] = useState(() => {
     const existing = localStorage.getItem("copilot.sessionId");
     if (existing) return existing;
@@ -40,9 +41,6 @@ export default function App() {
     localStorage.setItem("copilot.sessionId", created);
     return created;
   });
-  const [userEmail, setUserEmail] = useState(
-    () => localStorage.getItem("userEmail") || ""
-  );
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState("auto");
   const [activeTab, setActiveTab] = useState("Answer");
@@ -58,27 +56,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [uploadStatus, setUploadStatus] = useState("");
   const [suggestedQueries, setSuggestedQueries] = useState([]);
-
-  useEffect(() => {
-    if (!userEmail) {
-      getMe()
-        .then((data) => {
-          setUserEmail(data.email || "");
-          localStorage.setItem("userEmail", data.email || "");
-        })
-        .catch(() => {
-          localStorage.removeItem("token");
-          localStorage.removeItem("userEmail");
-          navigate("/login", { replace: true });
-        });
-    }
-  }, [userEmail, navigate]);
-
-  function handleLogout() {
-    localStorage.removeItem("token");
-    localStorage.removeItem("userEmail");
-    navigate("/login", { replace: true });
-  }
 
   const selectedMetrics = response?.metrics || {};
   const citations = response?.citations || [];
@@ -206,22 +183,29 @@ export default function App() {
   }, [response, selectedMetrics.route_decision]);
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <section className="brand-block">
-          <div>
+    <>
+      <Show when="signed-out">
+        <div className="login-screen">
+          <div className="login-brand">
             <h1>AI Copilot Console</h1>
-            <p>{routeBadge}</p>
+            <p>Welcome back! Please sign in to access your dashboard.</p>
           </div>
-          {userEmail && (
-            <div className="user-block">
-              <span className="user-email">{userEmail}</span>
-              <button className="logout-button" onClick={handleLogout} title="Sign out">
-                <LogOut size={16} />
-              </button>
-            </div>
-          )}
-        </section>
+          <SignIn />
+        </div>
+      </Show>
+      
+      <Show when="signed-in">
+        <main className="app-shell">
+          <aside className="sidebar">
+            <section className="brand-block">
+              <div>
+                <h1>AI Copilot Console</h1>
+                <p>{routeBadge}</p>
+              </div>
+              <div className="auth-buttons">
+                <UserButton />
+              </div>
+            </section>
 
         <section className="panel">
           <header className="panel-header">
@@ -409,7 +393,9 @@ export default function App() {
           </div>
         </section>
       </section>
-    </main>
+        </main>
+      </Show>
+    </>
   );
 }
 

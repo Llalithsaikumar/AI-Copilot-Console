@@ -44,7 +44,6 @@ class Orchestrator:
         request: QueryRequest,
         request_id: str,
         on_token: Any | None = None,
-        user_id: str | None = None,
     ) -> QueryResponse:
         started = time.perf_counter()
         route = self.route(request)
@@ -54,7 +53,7 @@ class Orchestrator:
                 meta={"mode": route.mode.value, "reason": route.reason},
             )
         ]
-        history = self.memory.recent_messages(request.session_id, user_id=user_id)
+        history = self.memory.recent_messages(request.session_id)
         retrieval_revision = (
             self.retriever.revision()
             if route.mode in {QueryMode.RAG, QueryMode.AGENT}
@@ -87,7 +86,7 @@ class Orchestrator:
             response.metrics.total_tokens = response.metrics.tokens
             response.metrics.cost = 0.0
             response.request_id = request_id
-            self._remember(request, response, request_id, user_id=user_id)
+            self._remember(request, response, request_id)
             return response
         trace.append(TraceStep(step="cache_check", meta={"hit": False}))
 
@@ -104,7 +103,6 @@ class Orchestrator:
                     self.retriever.all_chunks(
                         session_id=request.session_id,
                         filters=request.filters,
-                        user_id=user_id,
                     )
                 )
             except Exception as exc:
@@ -143,7 +141,6 @@ class Orchestrator:
                     top_k=request.top_k,
                     session_id=request.session_id,
                     filters=request.filters,
-                    user_id=user_id,
                 )
             except Exception as exc:
                 return self._error_response(
@@ -294,7 +291,7 @@ class Orchestrator:
             request_id=request_id,
         )
         self.cache.set(cache_key, response.model_dump(mode="json"))
-        self._remember(request, response, request_id, user_id=user_id)
+        self._remember(request, response, request_id)
         return response
 
     def route(self, request: QueryRequest) -> RouteDecision:
@@ -496,7 +493,6 @@ class Orchestrator:
         request: QueryRequest,
         response: QueryResponse,
         request_id: str,
-        user_id: str | None = None,
     ) -> None:
         self.memory.add_turn(
             session_id=request.session_id,
@@ -509,20 +505,4 @@ class Orchestrator:
                 "citations": [citation.model_dump() for citation in response.citations],
                 "trace": [step.model_dump() for step in response.trace],
             },
-        )
-        # Also save to memory store with user_id for multi-tenant isolation
-        self.memory.save(
-            session_id=request.session_id,
-            message={
-                "user_input": request.query,
-                "system_response": response.answer,
-                "mode_used": response.mode_used.value,
-                "request_id": request_id,
-                "metadata": {
-                    "metrics": json.loads(response.metrics.model_dump_json()),
-                    "citations": [citation.model_dump() for citation in response.citations],
-                    "trace": [step.model_dump() for step in response.trace],
-                },
-            },
-            user_id=user_id,
         )

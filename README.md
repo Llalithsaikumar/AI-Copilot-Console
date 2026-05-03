@@ -228,7 +228,6 @@ VITE_API_URL=https://your-link.onrender.com
 
 * PostgreSQL + Redis (production storage)
 * Hybrid retrieval + reranking
-* Auth + multi-user isolation
 * Cost tracking dashboard
 
 ---
