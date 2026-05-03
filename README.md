@@ -1,4 +1,4 @@
-## Project Overview
+# Project Overview
 
 AI Copilot Console is a full-stack production-grade AI system combining RAG (Retrieval-Augmented Generation) and Agent-based reasoning. It features real-time streaming responses, session memory, and built-in evaluation.
 
