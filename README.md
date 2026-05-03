@@ -1,246 +1,177 @@
-# 🚀 AI Copilot Console
+# Project Overview
 
-**Production-Grade RAG + Agent AI System (FastAPI + React + Vercel + Render)**
+AI Copilot Console is a full-stack production-grade AI system combining RAG (Retrieval-Augmented Generation) and Agent-based reasoning. It features real-time streaming responses, session memory, and built-in evaluation.
 
----
+**Live URLs:** Frontend: https://ai-copilot-console.vercel.app/ | Backend API: https://your-link.onrender.com (Render)
 
-## 🔗 Live Demo
+## Architecture
 
-* 🌐 Frontend: https://ai-copilot-console.vercel.app/
-* ⚙️ Backend API: https://your-link.onrender.com
+### Backend (FastAPI + Python)
 
----
+The backend uses a **service container pattern** for dependency injection. All services are wired in `build_container()` in `backend/app/main.py` and accessed via `app.state.container`.
 
-## 🧠 Overview
+**Core services:**
+- **Orchestrator** (`backend/app/services/orchestrator.py`) — Routes queries to LLM/RAG/Agent modes, handles caching, and builds responses with trace + metrics
+- **RetrievalService** (`backend/app/services/retrieval.py`) — Hybrid search (dense + keyword) with ChromaDB, BM25-style reranking, section detection
+- **AgentPipeline** (`backend/app/services/agent.py`) — Planner-executor pattern with tools: retrieval, calculator, summarize_context, extract_risks
+- **ProviderFallbackClient** (`backend/app/services/llm_provider.py`) — OpenRouter (primary) with Gemini fallback, supports streaming
+- **MemoryStore** (`backend/app/services/memory.py`) — Session-based conversation history (SQLite or PostgreSQL)
+- **ResponseCache** (`backend/app/services/cache.py`) — Caches query responses keyed by session + query + mode + retrieval revision
 
-AI Copilot Console is a **full-stack, production-style AI system** that combines:
-
-* 📚 **Retrieval-Augmented Generation (RAG)**
-* 🤖 **Agent-based reasoning (planner–executor)**
-* ⚡ **Real-time streaming responses**
-* 📊 **Observability + evaluation pipeline**
-
-The system can ingest documents, retrieve context-aware knowledge, execute multi-step reasoning, and return **traceable, measurable outputs**.
-
----
-
-## ✨ Key Features
-
-* 🔎 **Document RAG** — semantic search with ChromaDB
-* 🤖 **Agent Pipeline** — planner–executor with tool usage
-* 🔌 **Multi-LLM Support** — OpenRouter (primary) + Gemini fallback
-* 🧠 **Session Memory** — persistent conversation tracking
-* ⚡ **Streaming Responses** — real-time token output
-* 📊 **Metrics & Observability** — latency, tokens, cache, errors
-* 🧪 **Evaluation System** — dataset-based scoring + report generation
-* 🗂️ **Source Citations** — transparent retrieval outputs
-
----
-
-## 🏗️ Architecture
-
+**Query flow:**
 ```
-User (Browser)
-     ↓
-Frontend (React + Vite on Vercel)
-     ↓
-FastAPI Backend (Render)
-     ↓
----------------------------------
-| Orchestrator Layer            |
-| - Routing (LLM / RAG / Agent) |
-| - Caching                     |
-| - Metrics                     |
----------------------------------
-     ↓
-RAG Pipeline → ChromaDB (Vector Search)
-     ↓
-LLM Providers → OpenRouter + Gemini
-     ↓
-Response (Answer + Trace + Metrics)
+User Query → Orchestrator.route() → LLM / RAG / AGENT
+                                    ↓
+                              Cache Check
+                                    ↓
+                              Retrieval (if RAG/Agent)
+                                    ↓
+                              Agent Execution (if Agent)
+                                    ↓
+                              LLM Response
+                                    ↓
+                              Metrics + Memory + Cache
 ```
 
----
+**Query modes** (see `backend/app/models.py`):
+- `auto` — Orchestrator decides based on query keywords
+- `llm` — Direct generation without retrieval
+- `rag` — Retrieval-augmented generation
+- `agent` — Multi-step reasoning with tool usage
 
-## 🔁 Query Flow
+**Key design decisions:**
+- Responses include trace steps, metrics, and citations for observability
+- Cache keys include retrieval revision so cache invalidates when documents are added
+- Email extraction has special-case handling in the orchestrator
+- Evaluation system (`backend/app/evaluation/evaluator.py`) uses dataset-based scoring
 
-```
-User Query
-   ↓
-Route Selection (LLM / RAG / Agent)
-   ↓
-Cache Check
-   ↓
-Retrieval (if needed)
-   ↓
-Agent Execution (multi-step reasoning)
-   ↓
-LLM Response
-   ↓
-Metrics + Memory + Cache
-   ↓
-Return Answer + Trace
-```
+### Frontend (React + Vite)
 
----
+Single-page app in `frontend/src/App.jsx` with tabbed response display:
+- **Answer** — Streaming response with citations
+- **Context** — Retrieved chunks with scores
+- **Trace** — Step-by-step execution trace
+- **Agent Steps** — Tool execution details
+- **Metrics** — Latency, tokens, cost, provider info
 
-## 🧱 Tech Stack
+API integration in `frontend/src/api.js` supports both streaming (`/v1/query/stream`) and non-streaming (`/v1/query`) endpoints. Vite dev server proxies `/v1`, `/health`, `/metrics` to backend (configured in `vite.config.js`).
+
+## Development Commands
 
 ### Backend
-
-* **FastAPI**, Uvicorn
-* **ChromaDB** (vector store)
-* **SQLite / PostgreSQL-ready** (memory)
-* **OpenRouter + Gemini** (LLMs)
-* Docker (deployment-ready)
-
-### Frontend
-
-* **React 18 + Vite**
-* Fetch API (backend integration)
-* Minimal UI + metrics display
-
-### Deployment
-
-* **Vercel** (frontend)
-* **Render** (backend)
-
----
-
-## 📊 Example Response
-
-```json
-{
-  "answer": "The document highlights financial and compliance risks...",
-  "trace": [
-    "retrieved 3 relevant chunks",
-    "summarized content",
-    "extracted risks"
-  ],
-  "metrics": {
-    "latency_ms": 120,
-    "tokens": 450,
-    "cache_hit": false
-  }
-}
-```
-
----
-
-## 🧪 Evaluation System
-
-Built-in evaluation framework to measure:
-
-* ✔ Answer relevance
-* ✔ Retrieval accuracy
-* ✔ Consistency
-
-Output:
-
-```json
-{
-  "avg_score": 0.78,
-  "total_cases": 50
-}
-```
-
----
-
-## 📸 Screenshots
-
-> <img width="1916" height="897" alt="image" src="https://github.com/user-attachments/assets/12f168ab-1bed-4687-bf21-f633cb4d00de" />
-
-
-* Chat UI
-* Agent trace
-* Metrics panel
-
----
-
-## ⚙️ Local Setup
-
-### Backend
-
+**Requires Python 3.11+** (see `pyproject.toml`)
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"     # Installs package with dev dependencies from pyproject.toml
 uvicorn app.main:app --reload
 ```
+Backend runs on `http://127.0.0.1:8000`. Set `PYTHONPATH=backend` for running tests outside the backend directory.
 
----
+**Note:** `pyproject.toml` is the authoritative dependency file. `requirements.txt` may be legacy - migrate dependencies there if needed.
 
 ### Frontend
-
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+Frontend runs on `http://127.0.0.1:5173` with API proxy to backend.
 
----
-
-## 🔐 Environment Variables
-
-```
-OPENROUTER_API_KEY=
-OPENROUTER_CHAT_MODEL=
-OPENROUTER_EMBEDDING_MODEL=
-GEMINI_API_KEY=
-PUBLIC_API_URL=
-```
-
----
-
-## 🚀 Deployment
-
-### Backend (Render)
-
-* Build: `pip install -r requirements.txt`
-* Start:
-
+### Tests
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 10000
+# Backend tests (from project root)
+pytest backend/tests/
+
+# Single test file
+pytest backend/tests/test_orchestrator.py -v
+
+# With coverage
+pytest backend/tests/ --cov=app
+
+# Frontend tests (Vitest)
+cd frontend
+npm test              # Runs Vitest (configured in vite.config.js)
+npm test -- --run     # Single run (CI mode)
 ```
 
-### Frontend (Vercel)
-
-* Root: `frontend/`
-* Build: `npm run build`
-* Env:
-
-```
-VITE_API_URL=https://your-link.onrender.com
+### Build
+```bash
+cd frontend
+npm run build
 ```
 
----
+### Linting
+```bash
+# Backend (ruff - if installed)
+ruff check backend/app/
+ruff format backend/app/
 
-## ⚠️ Known Limitations
+# Frontend (if ESLint configured)
+cd frontend
+npm run lint  # Add "lint": "eslint src/" to package.json if needed
+```
 
-* Render free tier → cold starts
-* Local storage (Chroma + SQLite) → non-persistent
-* Free LLM models → variable latency
+### Docker
+```bash
+# Run with docker-compose (backend + redis)
+docker-compose up --build
 
----
+# Run with postgres profile
+docker-compose --profile postgres up
 
-## 🔮 Future Improvements
+# Backend only
+docker build -t ai-copilot-backend .
+docker run -p 8000:8000 --env-file .env ai-copilot-backend
+```
 
-* PostgreSQL + Redis (production storage)
-* Hybrid retrieval + reranking
-* Cost tracking dashboard
+## Environment Variables
 
----
+Copy `.env.example` to `.env` and configure:
+- `OPENROUTER_API_KEY` + `OPENROUTER_CHAT_MODEL` + `OPENROUTER_EMBEDDING_MODEL` — Primary LLM provider
+- `OPENROUTER_BASE_URL` — OpenRouter API URL (default: `https://openrouter.ai/api/v1`)
+- `GEMINI_API_KEY` + `GEMINI_CHAT_MODEL` — Fallback LLM provider
+- `GEMINI_BASE_URL` — Gemini API URL (default: `https://generativelanguage.googleapis.com/v1beta`)
+- `CORS_ORIGINS` — Comma-separated allowed origins (default: `http://localhost:5173,http://127.0.0.1:5173`)
+- `DATA_DIR` — Data directory (default: `data/`, contains ChromaDB and SQLite)
+- `CHROMA_COLLECTION` — Vector store collection name (default: `knowledge_base`)
+- `SQLITE_PATH` — SQLite database path (default: `data/copilot.sqlite3`)
+- `STORAGE_BACKEND` — `sqlite` (default) or `postgres`
+- `POSTGRES_DSN` — PostgreSQL connection string (if using postgres)
+- `ENV` — `dev` or `prod` (affects CORS and storage defaults)
+- `MAX_UPLOAD_MB` — Max file upload size (default: 15)
+- `PUBLIC_API_URL` — Public API URL for CORS (default: `http://localhost:8000`)
+- `CHUNK_SIZE` / `CHUNK_OVERLAP` — Text chunking parameters (default: 1000/150)
+- `RETRIEVAL_TOP_K` — Number of chunks to retrieve (default: 5)
+- `PRICE_PER_1K_TOKENS` — Cost tracking per 1k tokens (default: 0.0)
 
-## 👤 Author
+## API Endpoints
 
-**Lalith Sai Kumar**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/query` | POST | Non-streaming query |
+| `/v1/query/stream` | POST | Streaming query (ndjson) |
+| `/v1/documents/upload` | POST | Upload document for indexing (.pdf, .txt, .md) |
+| `/v1/documents` | GET | List indexed documents |
+| `/v1/sessions/{id}/history` | GET | Session conversation history |
+| `/v1/sessions/{id}/metrics` | GET | Per-session metrics |
+| `/metrics` | GET | Aggregate metrics (JSON) |
+| `/metrics/prometheus` | GET | Prometheus-format metrics |
+| `/v1/evaluation/run` | POST | Run evaluation suite |
+| `/v1/evaluation/dataset` | GET | View evaluation dataset |
+| `/v1/evaluation/report` | GET | View evaluation report |
+| `/health` | GET | Health check |
 
-* AI / LLM Engineer
-* Backend Systems + Production AI
+## Data Storage
 
----
+- **ChromaDB**: `data/chroma/` — Vector store for document embeddings
+- **SQLite**: `data/copilot.sqlite3` — Session memory and conversation history (default for dev)
+- **PostgreSQL**: Optional via `STORAGE_BACKEND=postgres` and `POSTGRES_DSN`
+- **Redis**: Included in docker-compose for future caching/session use (not yet integrated)
+- **Evaluation**: `backend/app/evaluation/dataset.json` and `report.json`
 
-## ⭐ If you like this project
+## Deployment
 
-Give it a star — it helps visibility!
+- **Backend (Render):** Start command `uvicorn app.main:app --host 0.0.0.0 --port 10000`. Uses Dockerfile with `pyproject.toml` for dependencies.
+- **Frontend (Vercel):** Root directory `frontend/`, build `npm run build`, output `frontend/dist`. Set env var `VITE_API_URL` to backend URL.
