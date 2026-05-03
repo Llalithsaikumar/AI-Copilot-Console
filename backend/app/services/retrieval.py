@@ -86,7 +86,11 @@ class RetrievalService:
         self,
         file_name: str,
         text: str,
+        *,
+        account_id: str,
         session_id: str | None = None,
+        size_bytes: int | None = None,
+        mime_type: str | None = None,
     ) -> IngestionResult:
         document_id = str(uuid4())
         chunks = self.chunker.chunk(text)
@@ -99,10 +103,14 @@ class RetrievalService:
         documents: list[str] = []
         created_at = datetime.now(timezone.utc).isoformat()
         model_name = self.embedder.embedding_model_name
+        size_val = int(size_bytes) if size_bytes is not None else 0
+        mime_val = mime_type or "application/octet-stream"
 
         skipped = 0
         for index, chunk in enumerate(chunks):
-            chunk_hash = self._chunk_hash(chunk, model_name, document_id, session_id)
+            chunk_hash = self._chunk_hash(
+                chunk, model_name, document_id, session_id, account_id=account_id
+            )
             chunk_id = f"chunk_{chunk_hash[:40]}"
             existing = self._collection.get(ids=[chunk_id])
             if existing.get("ids"):
@@ -113,6 +121,7 @@ class RetrievalService:
             documents.append(chunk)
             metadatas.append(
                 {
+                    "account_id": account_id,
                     "document_id": document_id,
                     "file_name": file_name,
                     "chunk_index": index,
@@ -121,10 +130,16 @@ class RetrievalService:
                     "session_id": session_id or "",
                     "section": sections[index],
                     "created_at": created_at,
+                    "file_size_bytes": size_val,
+                    "mime_type": mime_val,
+                    "ingest_status": "indexed",
+                    "document_chunks_skipped": 0,
                 }
             )
 
         if documents:
+            for meta in metadatas:
+                meta["document_chunks_skipped"] = skipped
             embeddings = await self.embedder.embed(documents)
             self._collection.add(
                 ids=ids,
@@ -139,10 +154,33 @@ class RetrievalService:
             chunks_skipped=skipped,
         )
 
+    def delete_document(self, account_id: str, document_id: str) -> int:
+        try:
+            result = self._collection.get(
+                where={
+                    "$and": [
+                        {"account_id": account_id},
+                        {"document_id": document_id},
+                    ]
+                },
+                include=[],
+            )
+        except Exception:
+            result = self._collection.get(
+                where={"$and": [{"account_id": account_id}, {"document_id": document_id}]},
+            )
+        ids = list(result.get("ids") or [])
+        if not ids:
+            return 0
+        self._collection.delete(ids=ids)
+        return len(ids)
+
     async def retrieve(
         self,
         query: str,
         top_k: int,
+        *,
+        account_id: str,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
@@ -150,7 +188,9 @@ class RetrievalService:
             return []
 
         candidate_k = max(top_k * 4, 20)
-        where = self._build_where(session_id=session_id, filters=filters)
+        where = self._build_where(
+            account_id=account_id, session_id=session_id, filters=filters
+        )
         query_embedding = (await self.embedder.embed([query]))[0]
         query_kwargs: dict[str, Any] = {
             "query_embeddings": [query_embedding],
@@ -183,7 +223,7 @@ class RetrievalService:
 
         keyword_chunks = self._keyword_candidates(
             query,
-            self.all_chunks(session_id=session_id, filters=filters),
+            self.all_chunks(account_id=account_id, session_id=session_id, filters=filters),
             candidate_k,
         )
         keyword_scores = {chunk.id: float(chunk.score or 0.0) for chunk in keyword_chunks}
@@ -233,8 +273,15 @@ class RetrievalService:
             )
         return final_chunks
 
-    def list_documents(self, session_id: str | None = None) -> list[DocumentRecord]:
-        where = self._build_where(session_id=session_id, filters=None)
+    def list_documents(
+        self,
+        *,
+        account_id: str,
+        session_id: str | None = None,
+    ) -> list[DocumentRecord]:
+        where = self._build_where(
+            account_id=account_id, session_id=session_id, filters=None
+        )
         get_kwargs: dict[str, Any] = {"include": ["metadatas"]}
         if where:
             get_kwargs["where"] = where
@@ -251,6 +298,11 @@ class RetrievalService:
                     "file_name": str(metadata.get("file_name", "unknown")),
                     "chunks": 0,
                     "updated_at": str(metadata.get("created_at", "")),
+                    "chunks_skipped": int(metadata.get("document_chunks_skipped") or 0),
+                    "size_bytes": int(metadata.get("file_size_bytes") or 0) or None,
+                    "mime_type": metadata.get("mime_type"),
+                    "status": str(metadata.get("ingest_status") or "indexed"),
+                    "uploaded_at": str(metadata.get("created_at", "")),
                 },
             )
             record["chunks"] += 1
@@ -258,13 +310,22 @@ class RetrievalService:
                 str(record["updated_at"]),
                 str(metadata.get("created_at", "")),
             )
+            record["chunks_skipped"] = max(
+                record["chunks_skipped"],
+                int(metadata.get("document_chunks_skipped") or 0),
+            )
 
         return [
             DocumentRecord(
                 document_id=value["document_id"],
                 file_name=value["file_name"],
                 chunks=value["chunks"],
+                chunks_skipped=value["chunks_skipped"],
+                size_bytes=value.get("size_bytes"),
+                mime_type=value.get("mime_type"),
+                status=value.get("status") or "indexed",
                 updated_at=value["updated_at"],
+                uploaded_at=value.get("uploaded_at"),
             )
             for value in sorted(
                 aggregate.values(),
@@ -275,10 +336,14 @@ class RetrievalService:
 
     def all_chunks(
         self,
+        *,
+        account_id: str,
         session_id: str | None = None,
         filters: QueryFilters | dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
-        where = self._build_where(session_id=session_id, filters=filters)
+        where = self._build_where(
+            account_id=account_id, session_id=session_id, filters=filters
+        )
         get_kwargs: dict[str, Any] = {"include": ["documents", "metadatas"]}
         if where:
             get_kwargs["where"] = where
@@ -307,8 +372,14 @@ class RetrievalService:
         model_name: str,
         document_id: str = "",
         session_id: str | None = None,
+        *,
+        account_id: str = "",
     ) -> str:
-        payload = f"{model_name}\n{document_id}\n{session_id or ''}\n{chunk}".encode("utf-8")
+        payload = (
+            f"{model_name}\n{document_id}\n{session_id or ''}\n{account_id}\n{chunk}".encode(
+                "utf-8"
+            )
+        )
         return hashlib.sha256(payload).hexdigest()
 
     @staticmethod
@@ -330,11 +401,12 @@ class RetrievalService:
     def _build_where(
         self,
         *,
+        account_id: str,
         session_id: str | None,
         filters: QueryFilters | dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        clauses: list[dict[str, str]] = []
-        if session_id and self._session_has_chunks(session_id):
+        clauses: list[dict[str, Any]] = [{"account_id": account_id}]
+        if session_id and self._account_session_has_chunks(account_id, session_id):
             clauses.append({"session_id": session_id})
 
         document_id = self._filter_value(filters, "document_id")
@@ -344,22 +416,20 @@ class RetrievalService:
         if section:
             clauses.append({"section": section})
 
-        if not clauses:
-            return None
         if len(clauses) == 1:
             return clauses[0]
         return {"$and": clauses}
 
-    def _session_has_chunks(self, session_id: str) -> bool:
+    def _account_session_has_chunks(self, account_id: str, session_id: str) -> bool:
         try:
             result = self._collection.get(
-                where={"session_id": session_id},
+                where={"$and": [{"account_id": account_id}, {"session_id": session_id}]},
                 include=["metadatas"],
                 limit=1,
             )
-        except TypeError:
+        except Exception:
             result = self._collection.get(
-                where={"session_id": session_id},
+                where={"$and": [{"account_id": account_id}, {"session_id": session_id}]},
                 include=["metadatas"],
             )
         return bool(result.get("ids"))

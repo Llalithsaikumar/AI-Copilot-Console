@@ -53,12 +53,13 @@ def build_service(items):
     return service
 
 
-def item(chunk_id, text, document_id, section, session_id, distance):
+def item(chunk_id, text, document_id, section, session_id, distance, account_id="testacc"):
     return {
         "id": chunk_id,
         "text": text,
         "distance": distance,
         "metadata": {
+            "account_id": account_id,
             "file_name": f"{document_id}.md",
             "document_id": document_id,
             "section": section,
@@ -78,7 +79,12 @@ def test_hybrid_retrieval_reranks_keyword_relevant_chunk():
     )
 
     chunks = asyncio.run(
-        service.retrieve("compliance risk", top_k=1, session_id="s1")
+        service.retrieve(
+            "compliance risk",
+            1,
+            account_id="testacc",
+            session_id="s1",
+        )
     )
 
     assert chunks[0].id == "chunk-2"
@@ -99,7 +105,8 @@ def test_retrieval_filters_by_document_section_and_session():
     chunks = asyncio.run(
         service.retrieve(
             "risk",
-            top_k=10,
+            10,
+            account_id="testacc",
             session_id="s1",
             filters=QueryFilters(document_id="doc1", section="risks"),
         )

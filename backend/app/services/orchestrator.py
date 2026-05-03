@@ -44,6 +44,8 @@ class Orchestrator:
         request: QueryRequest,
         request_id: str,
         on_token: Any | None = None,
+        *,
+        account_id: str = "legacy",
     ) -> QueryResponse:
         started = time.perf_counter()
         route = self.route(request)
@@ -53,13 +55,14 @@ class Orchestrator:
                 meta={"mode": route.mode.value, "reason": route.reason},
             )
         ]
-        history = self.memory.recent_messages(request.session_id)
+        history = self.memory.recent_messages(account_id, request.session_id)
         retrieval_revision = (
             self.retriever.revision()
             if route.mode in {QueryMode.RAG, QueryMode.AGENT}
             else 0
         )
         cache_key = make_cache_key(
+            account_id,
             request.session_id,
             request.query,
             request.context,
@@ -86,7 +89,7 @@ class Orchestrator:
             response.metrics.total_tokens = response.metrics.tokens
             response.metrics.cost = 0.0
             response.request_id = request_id
-            self._remember(request, response, request_id)
+            self._remember(request, response, request_id, account_id=account_id)
             return response
         trace.append(TraceStep(step="cache_check", meta={"hit": False}))
 
@@ -101,6 +104,7 @@ class Orchestrator:
             try:
                 email_chunks = chunks_with_emails(
                     self.retriever.all_chunks(
+                        account_id=account_id,
                         session_id=request.session_id,
                         filters=request.filters,
                     )
@@ -116,6 +120,7 @@ class Orchestrator:
                     retrieval_time_ms=retrieval_time_ms,
                     retrieved_chunks=retrieved_chunks,
                     agent_steps=agent_steps,
+                    account_id=account_id,
                 )
             elapsed = (time.perf_counter() - retrieval_started) * 1000
             retrieval_time_ms += elapsed
@@ -138,7 +143,8 @@ class Orchestrator:
             try:
                 retrieved_chunks = await self.retriever.retrieve(
                     request.query,
-                    top_k=request.top_k,
+                    request.top_k,
+                    account_id=account_id,
                     session_id=request.session_id,
                     filters=request.filters,
                 )
@@ -153,6 +159,7 @@ class Orchestrator:
                     retrieval_time_ms=retrieval_time_ms,
                     retrieved_chunks=retrieved_chunks,
                     agent_steps=agent_steps,
+                    account_id=account_id,
                 )
             elapsed = (time.perf_counter() - retrieval_started) * 1000
             retrieval_time_ms += elapsed
@@ -200,6 +207,7 @@ class Orchestrator:
                     history=history,
                     context_chunks=retrieved_chunks,
                     top_k=request.top_k,
+                    account_id=account_id,
                     session_id=request.session_id,
                     filters=request.filters.model_dump(mode="json"),
                 )
@@ -214,6 +222,7 @@ class Orchestrator:
                     retrieval_time_ms=retrieval_time_ms,
                     retrieved_chunks=retrieved_chunks,
                     agent_steps=agent_steps,
+                    account_id=account_id,
                 )
             answer = agent_run.answer
             retrieved_chunks = agent_run.retrieved_chunks
@@ -259,6 +268,7 @@ class Orchestrator:
                     retrieval_time_ms=retrieval_time_ms,
                     retrieved_chunks=retrieved_chunks,
                     agent_steps=agent_steps,
+                    account_id=account_id,
                 )
             trace.append(
                 TraceStep(
@@ -278,6 +288,8 @@ class Orchestrator:
             answer=answer,
             retrieval_time_ms=retrieval_time_ms,
             cache_hit=False,
+            retrieval_chunk_count=len(retrieved_chunks),
+            agent_step_count=len(agent_steps),
         )
         response = QueryResponse(
             answer=answer,
@@ -291,7 +303,7 @@ class Orchestrator:
             request_id=request_id,
         )
         self.cache.set(cache_key, response.model_dump(mode="json"))
-        self._remember(request, response, request_id)
+        self._remember(request, response, request_id, account_id=account_id)
         return response
 
     def route(self, request: QueryRequest) -> RouteDecision:
@@ -399,6 +411,8 @@ class Orchestrator:
         retrieval_time_ms: float,
         cache_hit: bool,
         error: str | None = None,
+        retrieval_chunk_count: int = 0,
+        agent_step_count: int = 0,
     ) -> ResponseMetrics:
         tokens = Orchestrator._token_count(usage, answer)
         provider_cost = usage.get("cost")
@@ -418,9 +432,12 @@ class Orchestrator:
             total_tokens=int(usage.get("total_tokens") or tokens),
             cost=cost,
             provider=usage.get("provider"),
+            model=usage.get("model"),
             fallback_used=bool(usage.get("fallback_used") or False),
             route_decision=route.reason,
             cache_hit=cache_hit,
+            retrieval_chunk_count=retrieval_chunk_count,
+            agent_step_count=agent_step_count,
             error=error,
         )
 
@@ -451,6 +468,7 @@ class Orchestrator:
         retrieval_time_ms: float,
         retrieved_chunks: list,
         agent_steps: list,
+        account_id: str = "legacy",
     ) -> QueryResponse:
         error_code = (
             error.error_code
@@ -472,6 +490,8 @@ class Orchestrator:
             retrieval_time_ms=retrieval_time_ms,
             cache_hit=False,
             error=error_code,
+            retrieval_chunk_count=len(retrieved_chunks),
+            agent_step_count=len(agent_steps),
         )
         response = QueryResponse(
             answer=answer,
@@ -485,7 +505,7 @@ class Orchestrator:
             metrics=metrics,
             request_id=request_id,
         )
-        self._remember(request, response, request_id)
+        self._remember(request, response, request_id, account_id=account_id)
         return response
 
     def _remember(
@@ -493,8 +513,11 @@ class Orchestrator:
         request: QueryRequest,
         response: QueryResponse,
         request_id: str,
+        *,
+        account_id: str,
     ) -> None:
         self.memory.add_turn(
+            account_id=account_id,
             session_id=request.session_id,
             user_input=request.query,
             system_response=response.answer,
@@ -504,5 +527,6 @@ class Orchestrator:
                 "metrics": json.loads(response.metrics.model_dump_json()),
                 "citations": [citation.model_dump() for citation in response.citations],
                 "trace": [step.model_dump() for step in response.trace],
+                "retrieved_chunks": [c.model_dump() for c in response.retrieved_chunks],
             },
         )

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.auth import get_account_id
 from app.main import app
 from app.models import QueryMode, QueryResponse, ResponseMetrics
 
@@ -16,7 +17,7 @@ class FakeMetrics:
 
 
 class FakeOrchestrator:
-    async def handle_query(self, request, request_id, on_token=None):
+    async def handle_query(self, request, request_id, on_token=None, account_id=None):
         return QueryResponse(
             answer="streamed answer",
             session_id=request.session_id,
@@ -37,14 +38,16 @@ def test_streaming_endpoint_emits_meta_tokens_and_final(monkeypatch):
         metrics=FakeMetrics(),
     )
     app.state.container = fake_container
+    app.dependency_overrides[get_account_id] = lambda: "user"
     try:
         client = TestClient(app)
         response = client.post(
             "/v1/query/stream",
-            json={"query": "hello", "session_id": "s1", "mode": "rag"},
+            json={"query": "hello", "session_id": "user:s1", "mode": "rag"},
         )
     finally:
         app.state.container = previous
+        app.dependency_overrides.pop(get_account_id, None)
 
     events = [
         json.loads(line)

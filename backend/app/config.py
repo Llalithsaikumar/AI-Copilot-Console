@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
 
+    clerk_jwks_url: str | None = Field(default=None, alias="CLERK_JWKS_URL")
+    clerk_issuer: str | None = Field(default=None, alias="CLERK_ISSUER")
+    clerk_audience: str | None = Field(default=None, alias="CLERK_AUDIENCE")
+    dev_account_id: str = Field(default="dev-local", alias="DEV_ACCOUNT_ID")
+    auth_disabled: bool = Field(default=False, alias="AUTH_DISABLED")
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
