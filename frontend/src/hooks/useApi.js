@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useAuth } from '@clerk/clerk';
+import { useAuth } from '@clerk/clerk-react';
 import { fetchWithAuth, API_BASE, parseJwt } from '../lib/apiClient';
 
 export function useApi() {
