@@ -11,6 +11,11 @@ class FakeEmbedder:
         return [[1.0, 0.0] for _ in texts]
 
 
+class FailingEmbedder(FakeEmbedder):
+    async def embed(self, texts):
+        raise RuntimeError("embedding provider down")
+
+
 class FakeCollection:
     def __init__(self, items):
         self.items = items
@@ -90,6 +95,29 @@ def test_hybrid_retrieval_reranks_keyword_relevant_chunk():
     assert chunks[0].id == "chunk-2"
     assert chunks[0].metadata["keyword_score"] > 0
     assert "rerank_score" in chunks[0].metadata
+
+
+def test_retrieval_falls_back_to_keyword_when_dense_embedding_fails():
+    service = build_service(
+        [
+            item("chunk-1", "general launch overview", "doc1", "intro", "s1", 0.05),
+            item("chunk-2", "compliance risk and financial exposure", "doc1", "risks", "s1", 0.10),
+        ]
+    )
+    service.embedder = FailingEmbedder()
+
+    chunks = asyncio.run(
+        service.retrieve(
+            "compliance risk",
+            1,
+            account_id="testacc",
+            session_id="s1",
+        )
+    )
+
+    assert chunks[0].id == "chunk-2"
+    assert chunks[0].metadata["dense_retrieval_error"] == "embedding provider down"
+    assert chunks[0].metadata["keyword_score"] > 0
 
 
 def test_retrieval_filters_by_document_section_and_session():

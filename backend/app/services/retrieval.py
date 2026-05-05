@@ -191,41 +191,47 @@ class RetrievalService:
         where = self._build_where(
             account_id=account_id, session_id=session_id, filters=filters
         )
-        query_embedding = (await self.embedder.embed([query]))[0]
-        query_kwargs: dict[str, Any] = {
-            "query_embeddings": [query_embedding],
-            "n_results": min(candidate_k, max(self._collection.count(), 1)),
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            query_kwargs["where"] = where
-        result = self._collection.query(**query_kwargs)
-
-        ids = (result.get("ids") or [[]])[0]
-        documents = (result.get("documents") or [[]])[0]
-        metadatas = (result.get("metadatas") or [[]])[0]
-        distances = (result.get("distances") or [[]])[0]
-
         dense_chunks: dict[str, RetrievedChunk] = {}
         dense_scores: dict[str, float] = {}
-        for chunk_id, document, metadata, distance in zip(
-            ids,
-            documents,
-            metadatas,
-            distances,
-            strict=False,
-        ):
-            metadata = metadata or {}
-            score = 1 - float(distance) if distance is not None else None
-            chunk = self._to_chunk(chunk_id, document or "", metadata, score)
-            dense_chunks[chunk.id] = chunk
-            dense_scores[chunk.id] = score or 0.0
-
+        dense_error: str | None = None
         keyword_chunks = self._keyword_candidates(
             query,
             self.all_chunks(account_id=account_id, session_id=session_id, filters=filters),
             candidate_k,
         )
+        try:
+            query_embedding = (await self.embedder.embed([query]))[0]
+            query_kwargs: dict[str, Any] = {
+                "query_embeddings": [query_embedding],
+                "n_results": min(candidate_k, max(self._collection.count(), 1)),
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if where:
+                query_kwargs["where"] = where
+            result = self._collection.query(**query_kwargs)
+
+            ids = (result.get("ids") or [[]])[0]
+            documents = (result.get("documents") or [[]])[0]
+            metadatas = (result.get("metadatas") or [[]])[0]
+            distances = (result.get("distances") or [[]])[0]
+
+            for chunk_id, document, metadata, distance in zip(
+                ids,
+                documents,
+                metadatas,
+                distances,
+                strict=False,
+            ):
+                metadata = metadata or {}
+                score = 1 - float(distance) if distance is not None else None
+                chunk = self._to_chunk(chunk_id, document or "", metadata, score)
+                dense_chunks[chunk.id] = chunk
+                dense_scores[chunk.id] = score or 0.0
+        except Exception as exc:
+            if not keyword_chunks:
+                raise
+            dense_error = str(exc)
+
         keyword_scores = {chunk.id: float(chunk.score or 0.0) for chunk in keyword_chunks}
 
         dense_norm = self._normalize_scores(dense_scores)
@@ -243,6 +249,8 @@ class RetrievalService:
                     "hybrid_score": hybrid_score,
                 }
             )
+            if dense_error:
+                metadata["dense_retrieval_error"] = dense_error
             merged[chunk.id] = RetrievedChunk(
                 id=chunk.id,
                 text=chunk.text,

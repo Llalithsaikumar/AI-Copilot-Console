@@ -62,6 +62,7 @@ export function useApi() {
       }
     } catch (err) {
       onError?.(err);
+      throw err;
     }
   }, [getToken]);
 

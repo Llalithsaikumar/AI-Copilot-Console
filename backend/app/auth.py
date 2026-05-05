@@ -52,6 +52,25 @@ def verify_clerk_token(token: str, settings: Settings) -> str:
     return sub
 
 
+def _decode_unverified_sub(token: str) -> str | None:
+    """Extract `sub` from a local dev JWT when JWKS verification is not configured."""
+    try:
+        payload = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+                "verify_iss": False,
+            },
+        )
+    except jwt.InvalidTokenError:
+        return None
+
+    sub = payload.get("sub")
+    return sub if isinstance(sub, str) and sub else None
+
+
 async def get_account_id(
     authorization: str | None = Header(default=None, alias="Authorization"),
     settings: Settings = Depends(get_settings),
@@ -71,6 +90,12 @@ async def get_account_id(
 
     if not settings.clerk_jwks_url:
         if settings.environment.lower() == "dev":
+            unverified_sub = _decode_unverified_sub(token)
+            if unverified_sub:
+                logger.warning(
+                    "CLERK_JWKS_URL unset; using unverified JWT sub in dev only"
+                )
+                return unverified_sub
             logger.warning(
                 "CLERK_JWKS_URL unset; using DEV_ACCOUNT_ID without JWT verification (dev only)"
             )

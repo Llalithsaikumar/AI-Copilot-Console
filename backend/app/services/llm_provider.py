@@ -10,6 +10,17 @@ from app.config import Settings
 from app.services.errors import ProviderConfigurationError, ProviderError
 
 
+DEFAULT_OPENROUTER_CHAT_FALLBACK_MODELS = (
+    "tencent/hy3-preview:free",
+    "google/gemma-4-31b-it:free",
+    "minimax/minimax-m2.5:free",
+    "z-ai/glm-4.5-air:free",
+    "openai/gpt-oss-120b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-3-27b-it:free",
+)
+
+
 @dataclass
 class LLMResponse:
     content: str
@@ -25,6 +36,43 @@ class OpenRouterClient:
     @property
     def embedding_model_name(self) -> str:
         return self.settings.openrouter_embedding_model or "unconfigured"
+
+    @property
+    def chat_model_candidates(self) -> list[str]:
+        configured_fallbacks = self._split_model_list(
+            getattr(self.settings, "openrouter_chat_fallback_models", None)
+        )
+        return self._dedupe_models(
+            [
+                self.settings.openrouter_chat_model,
+                *configured_fallbacks,
+                *DEFAULT_OPENROUTER_CHAT_FALLBACK_MODELS,
+            ]
+        )
+
+    @staticmethod
+    def _split_model_list(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        return [
+            model.strip()
+            for model in raw.replace("\n", ",").split(",")
+            if model.strip()
+        ]
+
+    @staticmethod
+    def _dedupe_models(models: list[str | None]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for model in models:
+            if not model:
+                continue
+            key = model.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(model)
+        return result
 
     def _headers(self) -> dict[str, str]:
         if not self.settings.openrouter_api_key:
@@ -70,13 +118,38 @@ class OpenRouterClient:
         raise ProviderError(last_error or "OpenRouter request failed.")
 
     async def chat(self, messages: list[dict[str, str]]) -> LLMResponse:
-        if not self.settings.openrouter_chat_model:
+        models = self.chat_model_candidates
+        if not models:
             raise ProviderConfigurationError(
-                "OPENROUTER_CHAT_MODEL is required before chat generation."
+                "OPENROUTER_CHAT_MODEL or OPENROUTER_CHAT_FALLBACK_MODELS is required before chat generation."
             )
 
+        errors: list[str] = []
+        for attempt_index, model in enumerate(models):
+            try:
+                response = await self._chat_with_model(messages, model)
+            except ProviderError as exc:
+                errors.append(f"{model}: {exc}")
+                continue
+
+            response.usage["openrouter_model_attempts"] = attempt_index + 1
+            response.usage["openrouter_fallback_used"] = attempt_index > 0
+            if errors:
+                response.usage["openrouter_previous_errors"] = errors
+            return response
+
+        raise ProviderError(
+            "All OpenRouter chat models failed. "
+            f"Last errors: {' | '.join(errors[-3:])}"
+        )
+
+    async def _chat_with_model(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+    ) -> LLMResponse:
         payload = {
-            "model": self.settings.openrouter_chat_model,
+            "model": model,
             "messages": messages,
             "temperature": self.settings.llm_temperature,
         }
@@ -89,22 +162,45 @@ class OpenRouterClient:
         content = message.get("content") or ""
         usage = data.get("usage") or {}
         usage["provider"] = "openrouter"
-        usage["model"] = data.get("model") or getattr(
-            self.settings, "openrouter_chat_model", None
-        )
+        usage["model"] = data.get("model") or model
         return LLMResponse(content=content, usage=usage, raw=data)
 
     async def chat_stream(
         self,
         messages: list[dict[str, str]],
     ) -> AsyncIterator[str]:
-        if not self.settings.openrouter_chat_model:
+        models = self.chat_model_candidates
+        if not models:
             raise ProviderConfigurationError(
-                "OPENROUTER_CHAT_MODEL is required before chat generation."
+                "OPENROUTER_CHAT_MODEL or OPENROUTER_CHAT_FALLBACK_MODELS is required before chat generation."
             )
 
+        errors: list[str] = []
+        for model in models:
+            streamed_any = False
+            try:
+                async for token in self._chat_stream_with_model(messages, model):
+                    streamed_any = True
+                    yield token
+                return
+            except ProviderError as exc:
+                if streamed_any:
+                    raise
+                errors.append(f"{model}: {exc}")
+                continue
+
+        raise ProviderError(
+            "All OpenRouter streaming chat models failed. "
+            f"Last errors: {' | '.join(errors[-3:])}"
+        )
+
+    async def _chat_stream_with_model(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+    ) -> AsyncIterator[str]:
         payload = {
-            "model": self.settings.openrouter_chat_model,
+            "model": model,
             "messages": messages,
             "temperature": self.settings.llm_temperature,
             "stream": True,
@@ -186,6 +282,14 @@ class GeminiClient:
     @property
     def is_configured(self) -> bool:
         return bool(self.settings.gemini_api_key and self.settings.gemini_chat_model)
+
+    @property
+    def is_embedding_configured(self) -> bool:
+        return bool(self.settings.gemini_api_key and self.settings.gemini_embedding_model)
+
+    @property
+    def embedding_model_name(self) -> str:
+        return self.settings.gemini_embedding_model or "unconfigured"
 
     def _headers(self) -> dict[str, str]:
         if not self.settings.gemini_api_key:
@@ -271,6 +375,30 @@ class GeminiClient:
             suffix = " " if index < len(words) - 1 else ""
             yield f"{word}{suffix}"
 
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.settings.gemini_embedding_model:
+            raise ProviderConfigurationError(
+                "GEMINI_EMBEDDING_MODEL is required before Gemini embedding."
+            )
+
+        model = self.settings.gemini_embedding_model
+        model_path = model if model.startswith("models/") else f"models/{model}"
+        payload = {
+            "requests": [
+                {
+                    "model": model_path,
+                    "content": {"parts": [{"text": text}]},
+                }
+                for text in texts
+            ]
+        }
+        data = await self._post_json(f"/{model_path}:batchEmbedContents", payload)
+        items = data.get("embeddings") or []
+        embeddings = [item.get("values") for item in items]
+        if len(embeddings) != len(texts) or any(item is None for item in embeddings):
+            raise ProviderError("Gemini returned an invalid embeddings response.")
+        return embeddings
+
     def _to_gemini_payload(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         system_parts: list[dict[str, str]] = []
         contents: list[dict[str, Any]] = []
@@ -306,7 +434,9 @@ class ProviderFallbackClient:
 
     @property
     def embedding_model_name(self) -> str:
-        return self.primary.embedding_model_name
+        if self.primary.embedding_model_name != "unconfigured":
+            return self.primary.embedding_model_name
+        return f"gemini:{self.fallback.embedding_model_name}"
 
     async def chat(self, messages: list[dict[str, str]]) -> LLMResponse:
         try:
@@ -323,14 +453,29 @@ class ProviderFallbackClient:
         self,
         messages: list[dict[str, str]],
     ) -> AsyncIterator[str]:
+        streamed_any = False
         try:
             async for token in self.primary.chat_stream(messages):
+                streamed_any = True
                 yield token
         except (ProviderConfigurationError, ProviderError):
+            if streamed_any:
+                raise
             if not self.fallback.is_configured:
                 raise
             async for token in self.fallback.chat_stream(messages):
                 yield token
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        return await self.primary.embed(texts)
+        try:
+            return await self.primary.embed(texts)
+        except (ProviderConfigurationError, ProviderError) as primary_error:
+            if not self.fallback.is_embedding_configured:
+                raise
+            try:
+                return await self.fallback.embed(texts)
+            except ProviderError as fallback_error:
+                raise ProviderError(
+                    "Both OpenRouter and Gemini embedding providers failed. "
+                    f"OpenRouter: {primary_error}; Gemini: {fallback_error}"
+                ) from fallback_error

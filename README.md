@@ -129,9 +129,9 @@ docker run -p 8000:8000 --env-file .env ai-copilot-backend
 ## Environment Variables
 
 Copy `.env.example` to `.env` and configure:
-- `OPENROUTER_API_KEY` + `OPENROUTER_CHAT_MODEL` + `OPENROUTER_EMBEDDING_MODEL` — Primary LLM provider
+- `OPENROUTER_API_KEY` + `OPENROUTER_CHAT_MODEL` + `OPENROUTER_CHAT_FALLBACK_MODELS` + `OPENROUTER_EMBEDDING_MODEL` — Primary LLM provider
 - `OPENROUTER_BASE_URL` — OpenRouter API URL (default: `https://openrouter.ai/api/v1`)
-- `GEMINI_API_KEY` + `GEMINI_CHAT_MODEL` — Fallback LLM provider
+- `GEMINI_API_KEY` + `GEMINI_CHAT_MODEL` + `GEMINI_EMBEDDING_MODEL` — Fallback LLM and embedding provider
 - `GEMINI_BASE_URL` — Gemini API URL (default: `https://generativelanguage.googleapis.com/v1beta`)
 - `CORS_ORIGINS` — Comma-separated allowed origins (default: `http://localhost:5173,http://127.0.0.1:5173`)
 - `DATA_DIR` — Data directory (default: `data/`, contains ChromaDB and SQLite)

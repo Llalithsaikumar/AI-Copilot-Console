@@ -262,7 +262,8 @@ export default function App() {
           await finalizeAndStore(finalResponse);
         },
         (event) => {
-          if (event?.answer) setError(event.answer);
+          const message = event?.answer || event?.message;
+          if (message) setError(message);
         }
       );
       setQuery("");

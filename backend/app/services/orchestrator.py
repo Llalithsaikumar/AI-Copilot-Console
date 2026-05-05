@@ -317,7 +317,22 @@ class Orchestrator:
             return RouteDecision(mode=QueryMode.AGENT, reason="multi_step_or_tool_request")
         if request.context or self._needs_retrieval(query):
             return RouteDecision(mode=QueryMode.RAG, reason="external_knowledge_request")
+        if self.retriever.revision() > 0 and not self._looks_like_small_talk(query):
+            return RouteDecision(mode=QueryMode.RAG, reason="indexed_documents_available")
         return RouteDecision(mode=QueryMode.LLM, reason="direct_generation")
+
+    @staticmethod
+    def _looks_like_small_talk(query: str) -> bool:
+        normalized = " ".join(query.lower().strip().split())
+        return normalized in {
+            "hi",
+            "hello",
+            "hey",
+            "thanks",
+            "thank you",
+            "ok",
+            "okay",
+        }
 
     @staticmethod
     def _needs_retrieval(query: str) -> bool:
@@ -475,7 +490,11 @@ class Orchestrator:
             if isinstance(error, CopilotError)
             else error.__class__.__name__.lower()
         )
-        answer = "Temporary issue, retrying..."
+        answer = (
+            str(error)
+            if isinstance(error, CopilotError)
+            else "Temporary issue, retrying..."
+        )
         trace.append(
             TraceStep(
                 step="error",

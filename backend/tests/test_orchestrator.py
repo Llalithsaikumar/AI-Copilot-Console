@@ -3,6 +3,7 @@ import asyncio
 from app.models import AgentStep, QueryMode, QueryRequest, RetrievedChunk, TraceStep
 from app.services.agent import AgentRun
 from app.services.cache import ResponseCache
+from app.services.errors import ProviderConfigurationError
 from app.services.llm_provider import LLMResponse
 from app.services.memory import SQLiteMemoryStore
 from app.services.orchestrator import Orchestrator
@@ -24,6 +25,11 @@ class FakeLLM:
 class FailingLLM(FakeLLM):
     async def chat(self, messages):
         raise RuntimeError("provider unavailable")
+
+
+class MisconfiguredLLM(FakeLLM):
+    async def chat(self, messages):
+        raise ProviderConfigurationError("OPENROUTER_CHAT_MODEL is required.")
 
 
 class FakeRetriever:
@@ -115,6 +121,26 @@ def test_auto_routes_contact_field_lookup_to_rag(tmp_path):
 
     assert route.mode == QueryMode.RAG
     assert route.reason == "indexed_document_field_lookup"
+
+
+def test_auto_routes_normal_questions_to_rag_when_documents_exist(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    request = QueryRequest(query="What is the strongest point?", mode=QueryMode.AUTO)
+
+    route = orchestrator.route(request)
+
+    assert route.mode == QueryMode.RAG
+    assert route.reason == "indexed_documents_available"
+
+
+def test_auto_keeps_small_talk_as_direct_generation(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    request = QueryRequest(query="hi", mode=QueryMode.AUTO)
+
+    route = orchestrator.route(request)
+
+    assert route.mode == QueryMode.LLM
+    assert route.reason == "direct_generation"
 
 
 def test_rag_query_returns_citations(tmp_path):
@@ -233,3 +259,22 @@ def test_llm_failure_returns_graceful_error_response(tmp_path):
     assert response.answer == "Temporary issue, retrying..."
     assert response.metrics.error == "runtimeerror"
     assert any(step.step == "error" for step in response.trace)
+
+
+def test_provider_configuration_error_is_user_visible(tmp_path):
+    orchestrator = build_orchestrator(tmp_path, llm=MisconfiguredLLM())
+    request = QueryRequest(
+        query="hello",
+        session_id="session-config-error",
+        mode=QueryMode.LLM,
+    )
+
+    response = asyncio.run(
+        orchestrator.handle_query(
+            request, request_id="request-config-error", account_id="legacy"
+        )
+    )
+
+    assert response.error is True
+    assert response.answer == "OPENROUTER_CHAT_MODEL is required."
+    assert response.metrics.error == "provider_configuration_error"

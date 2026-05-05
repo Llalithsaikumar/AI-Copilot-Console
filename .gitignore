@@ -6,6 +6,7 @@ logs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_tmp/
 
 frontend/node_modules/
 frontend/dist/

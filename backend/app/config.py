@@ -5,6 +5,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILES = (PROJECT_ROOT / ".env", Path(".env"))
+
+
 class Settings(BaseSettings):
     app_name: str = "AI Copilot System"
     environment: str = Field(default="dev", alias="ENV")
@@ -19,6 +23,10 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     openrouter_chat_model: str | None = Field(default=None, alias="OPENROUTER_CHAT_MODEL")
+    openrouter_chat_fallback_models: str | None = Field(
+        default=None,
+        alias="OPENROUTER_CHAT_FALLBACK_MODELS",
+    )
     openrouter_embedding_model: str | None = Field(
         default=None,
         alias="OPENROUTER_EMBEDDING_MODEL",
@@ -41,6 +49,10 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash-lite",
         alias="GEMINI_CHAT_MODEL",
     )
+    gemini_embedding_model: str | None = Field(
+        default="text-embedding-004",
+        alias="GEMINI_EMBEDDING_MODEL",
+    )
     gemini_base_url: str = Field(
         default="https://generativelanguage.googleapis.com/v1beta",
         alias="GEMINI_BASE_URL",
@@ -60,7 +72,11 @@ class Settings(BaseSettings):
     dev_account_id: str = Field(default="dev-local", alias="DEV_ACCOUNT_ID")
     auth_disabled: bool = Field(default=False, alias="AUTH_DISABLED")
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILES,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @property
     def chroma_dir(self) -> Path:

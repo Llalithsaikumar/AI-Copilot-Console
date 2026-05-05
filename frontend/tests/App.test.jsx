@@ -1,7 +1,20 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../src/App.jsx";
-import * as api from "../src/api.js";
+
+const api = vi.hoisted(() => ({
+  generateSessionId: vi.fn(),
+  getHistory: vi.fn(),
+  getMetrics: vi.fn(),
+  getSessionMetrics: vi.fn(),
+  listDocuments: vi.fn(),
+  listSessions: vi.fn(),
+  queryCopilot: vi.fn(),
+  queryCopilotStream: vi.fn(),
+  uploadDocument: vi.fn(),
+  deleteDocument: vi.fn(),
+  deleteSession: vi.fn()
+}));
 
 vi.mock("@clerk/react", () => ({
   useUser: () => ({
@@ -26,23 +39,14 @@ vi.mock("@clerk/react", () => ({
   SignIn: () => null
 }));
 
-vi.mock("../src/api.js", () => ({
-  setApiAuth: vi.fn(),
-  getHistory: vi.fn(),
-  getMetrics: vi.fn(),
-  getSessionMetrics: vi.fn(),
-  listDocuments: vi.fn(),
-  listSessions: vi.fn(),
-  queryCopilot: vi.fn(),
-  queryCopilotStream: vi.fn(),
-  uploadDocument: vi.fn(),
-  deleteDocument: vi.fn(),
-  deleteSession: vi.fn()
+vi.mock("../src/hooks/useApi.js", () => ({
+  useApi: () => api
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  localStorage.setItem("copilot:user_test:activeSession", "user_test:session-1");
   const queryResponse = {
     answer: "The report has one key risk.",
     session_id: "session-1",
@@ -75,6 +79,7 @@ beforeEach(() => {
     },
     request_id: "request-1"
   };
+  api.generateSessionId.mockResolvedValue("user_test:session-1");
   api.listSessions.mockResolvedValue([]);
   api.getHistory.mockResolvedValue({ turns: [] });
   api.getMetrics.mockResolvedValue({
@@ -114,8 +119,13 @@ afterEach(() => {
   cleanup();
 });
 
-test("submits a query and renders the answer", async () => {
+async function renderReady() {
   render(<App />);
+  await screen.findByTitle("user_test:session-1");
+}
+
+test("submits a query and renders the answer", async () => {
+  await renderReady();
   const typedQuery = `query-${Date.now()}`;
 
   fireEvent.change(screen.getByLabelText("Query"), {
@@ -138,7 +148,7 @@ test("submits a query and renders the answer", async () => {
 });
 
 test("submits a query when Enter is pressed in the textarea", async () => {
-  render(<App />);
+  await renderReady();
   const typedQuery = `keyboard-${Date.now()}`;
 
   const textarea = screen.getByLabelText("Query");
@@ -160,7 +170,7 @@ test("submits a query when Enter is pressed in the textarea", async () => {
 });
 
 test("shows suggested queries after upload and copies one into the composer", async () => {
-  render(<App />);
+  await renderReady();
 
   const file = new File(["profile text"], "profile.pdf", { type: "application/pdf" });
   fireEvent.change(screen.getByLabelText(/upload/i), {
@@ -179,7 +189,7 @@ test("shows suggested queries after upload and copies one into the composer", as
 });
 
 test("streams tokens before final response", async () => {
-  render(<App />);
+  await renderReady();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "stream please" }
@@ -193,7 +203,7 @@ test("streams tokens before final response", async () => {
 });
 
 test("toggles source visibility", async () => {
-  render(<App />);
+  await renderReady();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "show sources" }
@@ -207,7 +217,7 @@ test("toggles source visibility", async () => {
 });
 
 test("toggles trace visibility", async () => {
-  render(<App />);
+  await renderReady();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "show trace" }
@@ -223,7 +233,7 @@ test("toggles trace visibility", async () => {
 
 test("falls back to blocking query when streaming fails", async () => {
   api.queryCopilotStream.mockRejectedValueOnce(new Error("stream failed"));
-  render(<App />);
+  await renderReady();
 
   fireEvent.change(screen.getByLabelText("Query"), {
     target: { value: "fallback please" }
