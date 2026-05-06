@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -85,10 +86,20 @@ def build_container() -> ServiceContainer:
 
 app = FastAPI(title="AI Copilot System", version="0.1.0")
 app.state.container = build_container()
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173",
+)
+
+origins = [
+    "http://localhost:5173",
+    FRONTEND_URL,
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
