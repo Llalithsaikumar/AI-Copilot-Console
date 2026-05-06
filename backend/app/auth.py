@@ -28,21 +28,16 @@ def verify_clerk_token(token: str, settings: Settings) -> str:
         raise JWTVerificationError("CLERK_JWKS_URL is not configured")
     try:
         signing_key = _jwks_client(settings.clerk_jwks_url).get_signing_key_from_jwt(token)
-        options: dict = {"require": ["exp", "sub"]}
-        if not settings.clerk_issuer:
-            options["verify_iss"] = False
-        if not settings.clerk_audience:
-            options["verify_aud"] = False
-        decode_kw: dict = {
-            "algorithms": ["RS256", "ES256"],
-            "options": options,
-        }
-        if settings.clerk_issuer:
-            decode_kw["issuer"] = settings.clerk_issuer
-        if settings.clerk_audience:
-            decode_kw["audience"] = settings.clerk_audience
-
-        payload = jwt.decode(token, signing_key.key, **decode_kw)
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=settings.clerk_issuer,
+            options={
+                "require": ["exp", "sub"],
+                "verify_aud": False,
+            },
+        )
     except jwt.InvalidTokenError as exc:
         raise JWTVerificationError(str(exc)) from exc
 
