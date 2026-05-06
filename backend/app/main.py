@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import traceback
 from dataclasses import dataclass
 from io import BytesIO
 from uuid import uuid4
@@ -119,6 +120,18 @@ async def copilot_error_handler(_, exc: CopilotError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": exc.error_code, "message": exc.message},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "type": type(exc).__name__,
+        },
     )
 
 
