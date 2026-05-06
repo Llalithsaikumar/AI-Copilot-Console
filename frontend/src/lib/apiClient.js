@@ -19,7 +19,6 @@ export function parseJwt(token) {
 
 export async function fetchWithAuth(url, options = {}, getToken) {
   const token = await getToken();
-  console.log("CLERK TOKEN:", token);
   
   if (!token) {
     throw new Error("Authentication required - 401 Unauthorized");
@@ -32,8 +31,6 @@ export async function fetchWithAuth(url, options = {}, getToken) {
     ...(options.headers || {}),
     Authorization: `Bearer ${token}`
   };
-
-  headers.Authorization = `Bearer ${token}`;
 
   try {
     const response = await fetch(url, { ...options, headers });
