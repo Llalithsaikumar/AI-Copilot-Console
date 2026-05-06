@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -87,28 +86,14 @@ def build_container() -> ServiceContainer:
 
 app = FastAPI(title="AI Copilot System", version="0.1.0")
 app.state.container = build_container()
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL",
-    "http://localhost:5173",
-)
-
-origins = [
-    "http://localhost:5173",
-    FRONTEND_URL,
-]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=app.state.container.settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.options("/{rest_of_path:path}")
-async def preflight_handler(rest_of_path: str):
-    return {}
 
 
 def container() -> ServiceContainer:
