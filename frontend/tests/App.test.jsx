@@ -177,10 +177,12 @@ test("shows suggested queries after upload and copies one into the composer", as
     target: { files: [file] }
   });
 
-  const suggestion = await screen.findByRole("button", {
+  // Suggestions surface both in the empty-thread welcome grid and as composer
+  // chips, so match all and pick the first.
+  const suggestions = await screen.findAllByRole("button", {
     name: "Find the email address in profile"
   });
-  fireEvent.click(suggestion);
+  fireEvent.click(suggestions[0]);
 
   expect(api.uploadDocument).toHaveBeenCalledWith(file, expect.any(String));
   expect(screen.getByLabelText("Query")).toHaveValue(
@@ -202,6 +204,36 @@ test("streams tokens before final response", async () => {
   expect(api.queryCopilotStream).toHaveBeenCalled();
 });
 
+test("serves repeated queries from memory cache without calling the API again", async () => {
+  await renderReady();
+
+  fireEvent.change(screen.getByLabelText("Query"), {
+    target: { value: "cache this answer" }
+  });
+  fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+  await waitFor(() =>
+    expect(screen.getByText("The report has one key risk.")).toBeInTheDocument()
+  );
+  expect(api.queryCopilotStream).toHaveBeenCalledTimes(1);
+
+  fireEvent.change(screen.getByLabelText("Query"), {
+    target: { value: "  CACHE THIS ANSWER  " }
+  });
+  fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+  await waitFor(() =>
+    expect(screen.getAllByText("The report has one key risk.")).toHaveLength(2)
+  );
+  expect(api.queryCopilotStream).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByText(/memory/).length).toBeGreaterThan(0);
+
+  const traceSummaries = screen.getAllByText("Trace");
+  fireEvent.click(traceSummaries[traceSummaries.length - 1]);
+  expect(screen.getByText("client_cache_return")).toBeInTheDocument();
+  expect(screen.getByText(/"hit": true/)).toBeInTheDocument();
+});
+
 test("toggles source visibility", async () => {
   await renderReady();
 
@@ -211,6 +243,8 @@ test("toggles source visibility", async () => {
   fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
   await screen.findByText(/report\.txt/);
+  // Display preferences (sources/trace toggles) now live in a composer popover.
+  fireEvent.click(screen.getByRole("button", { name: "Display preferences" }));
   fireEvent.click(screen.getByLabelText("Show sources"));
 
   expect(screen.queryByText(/report\.txt/)).not.toBeInTheDocument();
@@ -224,8 +258,10 @@ test("toggles trace visibility", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
-  fireEvent.click(await screen.findByRole("button", { name: "Trace" }));
+  // Trace renders inline per-message (no more global tab); it's shown while the
+  // "Show agent trace" preference is on.
   await screen.findByText("route");
+  fireEvent.click(screen.getByRole("button", { name: "Display preferences" }));
   fireEvent.click(screen.getByLabelText("Show agent trace"));
 
   expect(screen.getByText("Trace is hidden.")).toBeInTheDocument();

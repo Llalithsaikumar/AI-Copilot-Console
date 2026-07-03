@@ -40,6 +40,30 @@ export async function idbSet(accountId, hashKey, value) {
   });
 }
 
+export async function idbClearSession(accountId, sessionId) {
+  const db = await openDb();
+  const prefix = `${accountId}:`;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const r = store.openCursor();
+    r.onerror = () => reject(r.error);
+    r.onsuccess = (ev) => {
+      const cursor = ev.target.result;
+      if (cursor) {
+        const val = cursor.value;
+        const cachedSessionId = val?.sessionId || val?.response?.session_id || val?.raw?.sessionId;
+        if (String(cursor.key).startsWith(prefix) && cachedSessionId === sessionId) {
+          cursor.delete();
+        }
+        cursor.continue();
+      } else {
+        resolve();
+      }
+    };
+  });
+}
+
 export async function idbDeleteEntry(accountId, hashKey) {
   const db = await openDb();
   const key = `${accountId}:${hashKey}`;
@@ -86,10 +110,11 @@ export async function idbInvalidateByDocumentId(accountId, documentId) {
       const cursor = ev.target.result;
       if (cursor) {
         const val = cursor.value;
+        const documentIds = val?.documentIds || val?.raw?.documentIds || [];
         if (
           String(cursor.key).startsWith(prefix) &&
-          Array.isArray(val?.documentIds) &&
-          val.documentIds.includes(documentId)
+          Array.isArray(documentIds) &&
+          documentIds.includes(documentId)
         ) {
           cursor.delete();
         }

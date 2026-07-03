@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
-import { Show, SignIn, useAuth, useUser } from "@clerk/react";
+import { Show, SignIn, useUser } from "@clerk/react";
 import { Toaster, toast } from "sonner";
 import { useApi } from "./hooks/useApi.js";
 import { cacheKeySource, sha256Hex } from "./lib/hashQuery.js";
 import { createLruCache } from "./lib/lruCache.js";
 import {
   idbClearAccount,
+  idbClearSession,
   idbGet,
   idbInvalidateByDocumentId,
   idbSet
@@ -21,10 +22,16 @@ import {
 
 import Sidebar from "./components/Sidebar";
 import AppHeader from "./components/AppHeader";
-import ModeSelector from "./components/ModeSelector";
-import QueryInput from "./components/QueryInput";
-import ResponsePanel from "./components/ResponsePanel";
+import ChatThread from "./components/ChatThread";
+import Composer from "./components/Composer";
 import ConfirmModal from "./components/ConfirmModal";
+
+/* Monotonic id source for thread messages (avoids key collisions). */
+let msgSeq = 0;
+function makeId(prefix) {
+  msgSeq += 1;
+  return `${prefix}-${Date.now()}-${msgSeq}`;
+}
 
 function extractDocumentIds(response) {
   const ids = new Set();
@@ -35,9 +42,10 @@ function extractDocumentIds(response) {
   return [...ids];
 }
 
-function buildCachePayload(query, response) {
+function buildCachePayload(query, response, sessionId) {
   return {
     query,
+    sessionId,
     answer: response.answer,
     context: response.retrieved_chunks,
     trace: response.trace,
@@ -46,6 +54,46 @@ function buildCachePayload(query, response) {
     timestamp: new Date().toISOString(),
     documentIds: extractDocumentIds(response)
   };
+}
+
+/* Map a backend query response → a thread assistant message. */
+function responseToMessage(response, opts = {}) {
+  return {
+    id: opts.id || makeId("a"),
+    role: "assistant",
+    content: response.answer || "",
+    mode: response.mode_used,
+    citations: response.citations || [],
+    chunks: response.retrieved_chunks || [],
+    agentSteps: response.agent_steps || [],
+    trace: response.trace || [],
+    metrics: response.metrics || {},
+    error: !!response.error,
+    streaming: opts.streaming ?? false
+  };
+}
+
+/* Rebuild the thread from server-side session history (user+assistant pairs). */
+function historyToMessages(turns) {
+  const out = [];
+  for (const turn of turns || []) {
+    const meta = turn.metadata || {};
+    out.push({ id: `u-${turn.id}`, role: "user", content: turn.user_input, mode: turn.mode_used });
+    out.push({
+      id: `a-${turn.id}`,
+      role: "assistant",
+      content: turn.system_response,
+      mode: turn.mode_used,
+      citations: meta.citations || [],
+      chunks: meta.retrieved_chunks || [],
+      agentSteps: [],
+      trace: meta.trace || [],
+      metrics: meta.metrics || {},
+      error: false,
+      streaming: false
+    });
+  }
+  return out;
 }
 
 export default function App() {
@@ -62,17 +110,16 @@ export default function App() {
     getHistory,
     deleteSession,
     getMetrics,
-    getSessionMetrics,
+    getSessionMetrics
   } = useApi();
 
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [query, setQuery] = useState("");
+  const [lastQuery, setLastQuery] = useState("");
   const [mode, setMode] = useState("auto");
-  const [activeTab, setActiveTab] = useState("Answer");
-  const [response, setResponse] = useState(null);
-  const [history, setHistory] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [metricsSnapshot, setMetricsSnapshot] = useState(null);
   const [sessionMetrics, setSessionMetrics] = useState(null);
@@ -91,9 +138,8 @@ export default function App() {
   useEffect(() => {
     if (!accountId) return;
     memoryCacheRef.current.clear();
-    setResponse(null);
+    setMessages([]);
     setQuery("");
-    setHistory([]);
     setSessions([]);
     setDocuments([]);
     setHasCompletedTurn(false);
@@ -115,19 +161,38 @@ export default function App() {
     }
   }, [accountId, generateSessionId]);
 
+  // Seed the thread from server history whenever the active session changes.
+  // Guarded on sessionId only, so it never clobbers a live stream mid-turn.
+  useEffect(() => {
+    if (!sessionId) {
+      setMessages([]);
+      return undefined;
+    }
+    let cancelled = false;
+    getHistory(sessionId)
+      .then((payload) => {
+        if (!cancelled) setMessages(historyToMessages(payload?.turns || []));
+      })
+      .catch(() => {
+        if (!cancelled) setMessages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   const refreshSideData = useCallback(async () => {
     if (!sessionId || !accountId) return;
     try {
-      const [sessionsPayload, historyPayload, docsPayload, metricsPayload, sessionMetricsPayload] =
+      const [sessionsPayload, docsPayload, metricsPayload, sessionMetricsPayload] =
         await Promise.all([
           listSessions().catch(() => []),
-          getHistory(sessionId),
           listDocuments(sessionId),
           getMetrics(),
           getSessionMetrics(sessionId)
         ]);
       setSessions(Array.isArray(sessionsPayload) ? sessionsPayload : []);
-      setHistory(historyPayload.turns || []);
       setDocuments(docsPayload || []);
       setMetricsSnapshot(metricsPayload || null);
       setSessionMetrics(sessionMetricsPayload || null);
@@ -159,80 +224,135 @@ export default function App() {
     client_cache_hit_at: hitAt
   });
 
-  const applyCachedResponse = useCallback(
-    (cached, layer) => {
-      const hitAt = new Date().toISOString();
-      setResponse({
-        ...cached.response,
-        metrics: mergeClientCacheMetrics(cached.response.metrics || {}, layer, hitAt)
+  const markClientCacheTrace = (trace = [], layer, hitAt) => {
+    const original = Array.isArray(trace) ? trace : [];
+    let sawCacheCheck = false;
+    const patched = original.map((step) => {
+      if (step?.step !== "cache_check") return step;
+      sawCacheCheck = true;
+      return {
+        ...step,
+        meta: {
+          ...(step.meta || {}),
+          hit: true,
+          layer,
+          source: "client",
+          hit_at: hitAt
+        }
+      };
+    });
+    if (!sawCacheCheck) {
+      patched.unshift({
+        step: "cache_check",
+        meta: { hit: true, layer, source: "client", hit_at: hitAt }
       });
-      setHasCompletedTurn(true);
-      setActiveTab("Answer");
-      toast.message(`Served from ${layer} cache`, { description: hitAt });
-    },
-    []
-  );
+    }
+    patched.push({
+      step: "client_cache_return",
+      meta: {
+        layer,
+        hit_at: hitAt,
+        cached_trace_steps: original.length
+      }
+    });
+    return patched;
+  };
 
-  async function submitQuery() {
-    if (!query.trim() || isQuerying || !sessionId) return;
+  const pushCachedMessage = useCallback((cachedResponse, layer) => {
+    const hitAt = new Date().toISOString();
+    const merged = {
+      ...cachedResponse,
+      trace: markClientCacheTrace(cachedResponse.trace, layer, hitAt),
+      metrics: mergeClientCacheMetrics(cachedResponse.metrics || {}, layer, hitAt)
+    };
+    setMessages((prev) => [...prev, responseToMessage(merged, { streaming: false })]);
+    setHasCompletedTurn(true);
+    toast.message(`Served from ${layer} cache`, { description: hitAt });
+  }, []);
+
+  async function submitQuery(opts = {}) {
+    const skipCache = opts.skipCache === true;
+    const isRegen = opts.regenerate === true;
+    const q = (opts.overrideQuery ?? query).trim();
+    if (!q || isQuerying || !sessionId) return;
     setIsQuerying(true);
     setError("");
-    setActiveTab("Answer");
-    const q = query.trim();
-    const payload = {
-      query: q,
-      session_id: sessionId,
-      mode
-    };
+    setLastQuery(q);
+    const payload = { query: q, session_id: sessionId, mode };
 
     const keySrc = cacheKeySource(sessionId, mode, q);
     const hashKey = await sha256Hex(keySrc);
 
-    const mem = memoryCacheRef.current.get(hashKey);
+    if (!isRegen) {
+      setMessages((prev) => [...prev, { id: makeId("u"), role: "user", content: q, mode }]);
+    }
+
+    const mem = skipCache ? null : memoryCacheRef.current.get(hashKey);
     if (mem?.response) {
-      applyCachedResponse(mem, "memory");
+      pushCachedMessage(mem.response, "memory");
       setQuery("");
       setIsQuerying(false);
       await refreshSideData();
       return;
     }
 
-    try {
-      const idbRow = await idbGet(accountId, hashKey);
-      if (idbRow?.response) {
-        memoryCacheRef.current.set(hashKey, idbRow);
-        applyCachedResponse(idbRow, "persisted");
-        setQuery("");
-        setIsQuerying(false);
-        await refreshSideData();
-        return;
+    if (!skipCache) {
+      try {
+        const idbRow = await idbGet(accountId, hashKey);
+        if (idbRow?.response) {
+          memoryCacheRef.current.set(hashKey, idbRow);
+          pushCachedMessage(idbRow.response, "persisted");
+          setQuery("");
+          setIsQuerying(false);
+          await refreshSideData();
+          return;
+        }
+      } catch {
+        /* ignore idb */
       }
-    } catch {
-      /* ignore idb */
     }
 
-    setResponse({
-      answer: "",
-      session_id: sessionId,
-      mode_used: mode,
+    const assistantId = makeId("a");
+    const placeholder = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      mode,
       citations: [],
-      retrieved_chunks: [],
-      agent_steps: [],
+      chunks: [],
+      agentSteps: [],
       trace: [],
       metrics: {},
-      request_id: "streaming"
+      error: false,
+      streaming: true
+    };
+    setMessages((prev) => {
+      const base =
+        isRegen && prev.length && prev[prev.length - 1].role === "assistant"
+          ? prev.slice(0, -1)
+          : prev;
+      return [...base, placeholder];
     });
+    setQuery("");
+
+    const patchAssistant = (patch) =>
+      setMessages((prev) =>
+        prev.map((mmsg) => (mmsg.id === assistantId ? { ...mmsg, ...patch } : mmsg))
+      );
 
     const finalizeAndStore = async (finalResponse) => {
-      setResponse(finalResponse);
+      const built = responseToMessage(finalResponse, { id: assistantId, streaming: false });
       if (finalResponse?.error) {
         setError(finalResponse.answer || "Temporary issue, retrying...");
+        patchAssistant({ ...built, error: true, streaming: false });
         return;
       }
+      patchAssistant({ ...built, streaming: false });
       setHasCompletedTurn(true);
       const entry = {
+        sessionId,
         response: finalResponse,
-        raw: buildCachePayload(q, finalResponse)
+        raw: buildCachePayload(q, finalResponse, sessionId)
       };
       memoryCacheRef.current.set(hashKey, entry);
       try {
@@ -253,10 +373,11 @@ export default function App() {
       await queryCopilotStream(
         payload,
         (token) => {
-          setResponse((current) => ({
-            ...(current || {}),
-            answer: `${current?.answer || ""}${token}`
-          }));
+          setMessages((prev) =>
+            prev.map((mmsg) =>
+              mmsg.id === assistantId ? { ...mmsg, content: `${mmsg.content}${token}` } : mmsg
+            )
+          );
         },
         async (finalResponse) => {
           await finalizeAndStore(finalResponse);
@@ -266,7 +387,6 @@ export default function App() {
           if (message) setError(message);
         }
       );
-      setQuery("");
       await refreshSideData();
     } catch (err) {
       try {
@@ -275,10 +395,11 @@ export default function App() {
         if (fallback?.error) {
           setError(fallback.answer || "Temporary issue, retrying...");
         }
-        setQuery("");
         await refreshSideData();
       } catch (fallbackError) {
-        setError(fallbackError.message || err.message);
+        const msg = fallbackError.message || err.message;
+        setError(msg);
+        patchAssistant({ streaming: false, error: true, content: msg });
       }
     } finally {
       setIsQuerying(false);
@@ -289,6 +410,11 @@ export default function App() {
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     submitQuery();
+  }
+
+  function handleRegenerate() {
+    if (!lastQuery || isQuerying) return;
+    submitQuery({ overrideQuery: lastQuery, skipCache: true, regenerate: true });
   }
 
   async function handleUpload(event) {
@@ -326,15 +452,14 @@ export default function App() {
       lastActiveAt: new Date().toISOString()
     });
     setSessionId(sid);
-    setResponse(null);
-    setHistory([]);
+    setMessages([]);
+    setSuggestedQueries([]);
     toast.success("New session");
   }
 
   function handleSelectSession(sid) {
     setActiveSessionId(accountId, sid);
     setSessionId(sid);
-    setResponse(null);
   }
 
   function requestDeleteSession(sid) {
@@ -381,8 +506,14 @@ export default function App() {
   }
 
   async function handleClearSessionCache() {
-    memoryCacheRef.current.clear();
-    toast.success("In-memory cache cleared for this browser tab");
+    try {
+      await idbClearSession(accountId, sessionId);
+      memoryCacheRef.current.clear();
+      toast.success("Query cache cleared for this session");
+    } catch {
+      memoryCacheRef.current.clear();
+      toast.warning("Cleared memory cache; persisted cache could not be cleared");
+    }
   }
 
   async function handleClearAllCache() {
@@ -403,13 +534,29 @@ export default function App() {
     });
   }
 
-  const selectedMetrics = useMemo(() => {
-    const base = response?.metrics || metricsSnapshot || {};
-    return base;
-  }, [response, metricsSnapshot]);
+  const latestAssistant = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "assistant") return messages[i];
+    }
+    return null;
+  }, [messages]);
 
-  const routeBadge = response
-    ? `${response.mode_used} / ${selectedMetrics.route_decision || "route"}`
+  const selectedMetrics = useMemo(
+    () => latestAssistant?.metrics || metricsSnapshot || {},
+    [latestAssistant, metricsSnapshot]
+  );
+
+  const headerResponse = latestAssistant
+    ? {
+        answer: latestAssistant.content,
+        error: latestAssistant.error,
+        metrics: latestAssistant.metrics,
+        mode_used: latestAssistant.mode
+      }
+    : null;
+
+  const routeBadge = latestAssistant
+    ? `${latestAssistant.mode || mode} / ${selectedMetrics.route_decision || "route"}`
     : "idle";
 
   const role =
@@ -418,6 +565,15 @@ export default function App() {
     (Array.isArray(user?.organizationMemberships) &&
       user.organizationMemberships[0]?.role) ||
     "";
+
+  const accountName =
+    user?.fullName || user?.primaryEmailAddress?.emailAddress || "User";
+  const userInitials = accountName
+    .split(/\s+/)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 
   return (
     <>
@@ -447,18 +603,18 @@ export default function App() {
           <Sidebar
             collapsed={sidebarCollapsed}
             setCollapsed={setSidebarCollapsed}
+            accountId={accountId}
             sessionId={sessionId}
             sessions={sessions}
+            sessionMetrics={sessionMetrics}
             onSelectSession={handleSelectSession}
             onNewSession={handleNewSession}
             onDeleteSession={requestDeleteSession}
-            history={history}
             documents={documents}
             routeBadge={routeBadge}
             isUploading={isUploading}
             handleUpload={handleUpload}
             uploadStatus={uploadStatus}
-            setResponse={setResponse}
             onDeleteFile={requestDeleteFile}
             onClearSessionCache={handleClearSessionCache}
             onClearAllCache={handleClearAllCache}
@@ -467,49 +623,52 @@ export default function App() {
           <div className="workspace-column">
             <AppHeader
               subtitle={routeBadge}
-              accountName={user?.fullName || user?.primaryEmailAddress?.emailAddress || "User"}
+              accountName={accountName}
               role={role}
+              metrics={selectedMetrics}
+              response={headerResponse}
+              mode={mode}
+              isQuerying={isQuerying}
+              hasCompletedTurn={hasCompletedTurn}
             />
 
             <section className="workspace">
-              <div className="main-content">
-                <ModeSelector
-                  mode={mode}
-                  setMode={setMode}
-                  showSources={showSources}
-                  setShowSources={setShowSources}
-                  showTrace={showTrace}
-                  setShowTrace={setShowTrace}
-                />
+              <ChatThread
+                messages={messages}
+                isQuerying={isQuerying}
+                mode={mode}
+                hasCompletedTurn={hasCompletedTurn}
+                showSources={showSources}
+                showTrace={showTrace}
+                sessionMetrics={sessionMetrics}
+                onRegenerate={handleRegenerate}
+                canRegenerate={!!lastQuery}
+                userInitials={userInitials}
+                welcomeSuggestions={suggestedQueries}
+                onPickSuggestion={(text) => setQuery(text)}
+              />
 
-                <QueryInput
-                  query={query}
-                  setQuery={setQuery}
-                  submitQuery={submitQuery}
-                  handleQueryKeyDown={handleQueryKeyDown}
-                  isQuerying={isQuerying}
-                  suggestedQueries={suggestedQueries}
-                />
+              {error && (
+                <div className="error-banner">
+                  <AlertCircle size={18} className="danger" />
+                  <span className="danger">{error}</span>
+                </div>
+              )}
 
-                {error && (
-                  <div className="error-banner glass-panel">
-                    <AlertCircle size={18} className="danger" />
-                    <span className="danger">{error}</span>
-                  </div>
-                )}
-
-                <ResponsePanel
-                  response={response}
-                  activeTab={activeTab}
-                  setActiveTab={setActiveTab}
-                  showSources={showSources}
-                  showTrace={showTrace}
-                  isQuerying={isQuerying}
-                  metricsSnapshot={selectedMetrics}
-                  sessionMetrics={sessionMetrics}
-                  hasCompletedTurn={hasCompletedTurn}
-                />
-              </div>
+              <Composer
+                query={query}
+                setQuery={setQuery}
+                submitQuery={submitQuery}
+                handleQueryKeyDown={handleQueryKeyDown}
+                isQuerying={isQuerying}
+                suggestedQueries={suggestedQueries}
+                mode={mode}
+                setMode={setMode}
+                showSources={showSources}
+                setShowSources={setShowSources}
+                showTrace={showTrace}
+                setShowTrace={setShowTrace}
+              />
             </section>
           </div>
         </div>

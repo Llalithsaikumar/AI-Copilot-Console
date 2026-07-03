@@ -47,7 +47,7 @@ export function useApi() {
           try {
             const event = JSON.parse(line);
             if (event.type === "token") onToken(event.text || "");
-            else if (event.type === "final") onFinal(event.response);
+            else if (event.type === "final") await onFinal(event.response);
             else if (event.type === "error") onError?.(event);
           } catch (e) {
             console.error("Failed to parse stream chunk", e);
@@ -57,7 +57,7 @@ export function useApi() {
 
       if (buffer.trim()) {
         const event = JSON.parse(buffer);
-        if (event.type === "final") onFinal(event.response);
+        if (event.type === "final") await onFinal(event.response);
         if (event.type === "error") onError?.(event);
       }
     } catch (err) {

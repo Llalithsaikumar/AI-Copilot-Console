@@ -1,5 +1,6 @@
 const LS_SESSIONS = (accountId) => `copilot:${accountId}:sessions`;
 const LS_ACTIVE = (accountId) => `copilot:${accountId}:activeSession`;
+const LS_PINNED = (accountId) => `copilot:${accountId}:pinnedSessions`;
 
 export function readSessionRegistry(accountId) {
   try {
@@ -30,4 +31,22 @@ export function upsertSessionRecord(accountId, record) {
   if (idx >= 0) list[idx] = { ...list[idx], ...record };
   else list.push(record);
   writeSessionRegistry(accountId, list);
+}
+
+export function readPinnedSet(accountId) {
+  try {
+    const raw = localStorage.getItem(LS_PINNED(accountId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function togglePinned(accountId, sessionId) {
+  const set = readPinnedSet(accountId);
+  if (set.has(sessionId)) set.delete(sessionId);
+  else set.add(sessionId);
+  localStorage.setItem(LS_PINNED(accountId), JSON.stringify([...set]));
+  return set;
 }

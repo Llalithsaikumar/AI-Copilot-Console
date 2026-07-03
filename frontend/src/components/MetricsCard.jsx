@@ -1,21 +1,20 @@
-export default function MetricsCard({ metricsSnapshot, sessionMetrics }) {
+import TokenAnalytics from "./TokenAnalytics";
+
+/*
+ * MetricsCard — the Metrics tab. Now a full Token Analytics dashboard on top,
+ * with the developer-oriented execution facts kept as a compact strip below.
+ */
+export default function MetricsCard({ metricsSnapshot, sessionMetrics, chunks = [] }) {
   const m = metricsSnapshot || {};
-  const prompt = m.prompt_tokens ?? m.promptTokens ?? 0;
-  const completion = m.completion_tokens ?? m.completionTokens ?? 0;
-  const total =
-    m.total_tokens ??
-    m.totalTokens ??
-    (Number(prompt) + Number(completion) || m.tokens || 0);
   const latency = Math.round(m.latency_ms ?? m.latencyMs ?? 0);
   const cacheHit = m.cache_hit ?? m.cacheHit;
   const clientHit = m.client_cache_hit;
   const clientAt = m.client_cache_hit_at;
-  const model = m.model || "—";
   const provider = m.provider || "—";
+  const model = m.model || "—";
   const retrievalCount =
     m.retrieval_chunk_count ?? m.retrievalChunkCount ?? m.retrieval_count;
-  const agentSteps =
-    m.agent_step_count ?? m.agentStepCount ?? m.agent_steps_count;
+  const agentSteps = m.agent_step_count ?? m.agentStepCount ?? m.agent_steps_count;
 
   const hasAny =
     Object.keys(m).length > 0 ||
@@ -33,71 +32,46 @@ export default function MetricsCard({ metricsSnapshot, sessionMetrics }) {
 
   return (
     <div className="metrics-tab-layout">
-      <div className="metrics-grid-detailed">
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Input tokens</span>
-          <span className="metric-value">{prompt}</span>
+      <TokenAnalytics metrics={m} sessionMetrics={sessionMetrics} chunks={chunks} />
+
+      {/* Developer execution strip */}
+      <div className="dev-strip glass-panel">
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Latency</span>
+          <span className="dev-strip__v metric-mono">{latency} ms</span>
         </div>
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Output tokens</span>
-          <span className="metric-value">{completion}</span>
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Provider · Model</span>
+          <span className="dev-strip__v metric-mono">{provider} · {model}</span>
         </div>
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Total tokens</span>
-          <span className="metric-value">{total}</span>
-        </div>
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Latency (ms)</span>
-          <span className="metric-value">{latency}</span>
-        </div>
-        <div className="metric-tile glass-panel metric-span-2">
-          <span className="metric-label">Cache hit (server)</span>
-          <span className="metric-value">
-            {cacheHit ? (
-              <span className="badge green">Yes</span>
-            ) : (
-              <span className="badge muted">No</span>
-            )}
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Server cache</span>
+          <span className="dev-strip__v">
+            {cacheHit ? <span className="badge green">Hit</span> : <span className="badge muted">Miss</span>}
           </span>
         </div>
-        <div className="metric-tile glass-panel metric-span-2">
-          <span className="metric-label">Client cache</span>
-          <span className="metric-value">
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Client cache</span>
+          <span className="dev-strip__v">
             {clientHit ? (
               <>
                 <span className="badge blue">Hit</span>
-                <small className="cache-ts">{clientAt || ""}</small>
+                {clientAt && <small className="cache-ts">{clientAt}</small>}
               </>
             ) : (
               <span className="badge muted">Miss</span>
             )}
           </span>
         </div>
-        <div className="metric-tile glass-panel metric-span-2">
-          <span className="metric-label">Model</span>
-          <span className="metric-value metric-mono">
-            {provider} · {model}
-          </span>
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Retrieval chunks</span>
+          <span className="dev-strip__v metric-mono">{retrievalCount ?? "—"}</span>
         </div>
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Retrieval chunks</span>
-          <span className="metric-value">{retrievalCount ?? "—"}</span>
-        </div>
-        <div className="metric-tile glass-panel">
-          <span className="metric-label">Agent steps</span>
-          <span className="metric-value">{agentSteps ?? "—"}</span>
+        <div className="dev-strip__row">
+          <span className="dev-strip__k">Agent steps</span>
+          <span className="dev-strip__v metric-mono">{agentSteps ?? "—"}</span>
         </div>
       </div>
-
-      {sessionMetrics && sessionMetrics.query_count > 0 && (
-        <div className="session-metrics-summary glass-panel">
-          <h4>Session aggregate</h4>
-          <p>
-            Queries: {sessionMetrics.query_count} · Tokens: {sessionMetrics.total_tokens} · Avg
-            latency: {Math.round(sessionMetrics.avg_latency_ms)} ms
-          </p>
-        </div>
-      )}
     </div>
   );
 }
